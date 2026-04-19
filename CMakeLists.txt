@@ -60,5 +60,3 @@ target_link_libraries ( ${PROJECT_NAME} labhelper )
 config_build_output()
 
 add_subdirectory ( labhelper )
-add_subdirectory ( pathtracer )
-add_subdirectory ( project )
