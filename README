@@ -1,1 +1,11 @@
-readme
+Hur man bygger projektet
+
+1. Se till att du har Visual Studio 17 (2022) installerat. Jag vet inte om den versionen är nödvändig, men det står så i tutorialen.
+
+2. Ladda ner och öppna CMake. Ställ in "Where is the source code" till repots path, och "Where to build the binaries" till [repo path]/build, och sen acceptera att den skapar build-mappen. Välj Visual Studio 17 som generator.
+
+3. Öppna build-mappen och öppna solution (.sln-filen) i Visual Studio.
+
+4. Gå till vänstersidan (Solution Explorer), högerklicka på advanced-computer-graphics och sen Debug->"Start without debugging" för att köra programmet.
+
+5. Förhoppningsvis ritas en triangel på din skärm.
