@@ -1,47 +1,118 @@
+
+
+#ifdef _WIN32
+extern "C" _declspec(dllexport) unsigned int NvOptimusEnablement = 0x00000001;
+#endif
+
 #include <GL/glew.h>
-
-#include <string>
-#include <fstream>
-#include <streambuf>
+#include <cmath>
 #include <cstdlib>
-#include <SDL.h>
+#include <algorithm>
+#include <chrono>
+
 #include <labhelper.h>
-
-
 #include <imgui.h>
 #include <imgui_impl_sdl_gl3.h>
 
-#include <iostream>
+#include <glm/glm.hpp>
+#include <glm/gtx/transform.hpp>
+using namespace glm;
+
+#include <Model.h>
+#include "hdr.h"
+#include "fbo.h"
+
+
+
+
+using std::min;
+using std::max;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Various globals
 ///////////////////////////////////////////////////////////////////////////////
+SDL_Window* g_window = nullptr;
+float currentTime = 0.0f;
+float previousTime = 0.0f;
+float deltaTime = 0.0f;
+bool showUI = false;
+int windowWidth, windowHeight;
 
-// The window we'll be rendering to
-extern SDL_Window* g_window = nullptr;
-
-float g_clearColor[3] = { 0.2f, 0.2f, 0.8f };
-
-glm::vec3 g_triangleColor = { 1, 1, 1 };
-
-
-///////////////////////////////////////////////////////////////////////////////
-// Scene objects
-///////////////////////////////////////////////////////////////////////////////
-
-// `vertexArrayObject' holds the data for each vertex. Data for each vertex
-// consists of positions (from positionBuffer) and color (from colorBuffer)
-// in this example.
-GLuint vertexArrayObject;
+// Mouse input
+ivec2 g_prevMouseCoords = { -1, -1 };
+bool g_isMouseDragging = false;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Shader programs
 ///////////////////////////////////////////////////////////////////////////////
+GLuint shaderProgram;       // Shader for rendering the final image
+GLuint simpleShaderProgram; // Shader used to draw the shadow map
+GLuint backgroundProgram;
 
-// The shaderProgram combines a vertex shader (vertexShader) and a
-// fragment shader (fragmentShader) into a single GLSL program that can
-// be activated (glUseProgram()).
-GLuint shaderProgram;
+///////////////////////////////////////////////////////////////////////////////
+// Environment
+///////////////////////////////////////////////////////////////////////////////
+float environment_multiplier = 1.5f;
+GLuint environmentMap, irradianceMap, reflectionMap;
+const std::string envmap_base_name = "001";
+
+///////////////////////////////////////////////////////////////////////////////
+// Light source
+///////////////////////////////////////////////////////////////////////////////
+vec3 lightPosition;
+vec3 point_light_color = vec3(1.f, 1.f, 1.f);
+
+float point_light_intensity_multiplier = 10000.0f;
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Camera parameters.
+///////////////////////////////////////////////////////////////////////////////
+vec3 cameraPosition(-70.0f, 50.0f, 70.0f);
+vec3 cameraDirection = normalize(vec3(0.0f) - cameraPosition);
+float cameraSpeed = 10.f;
+
+vec3 worldUp(0.0f, 1.0f, 0.0f);
+
+///////////////////////////////////////////////////////////////////////////////
+// Models
+///////////////////////////////////////////////////////////////////////////////
+labhelper::Model* fighterModel = nullptr;
+labhelper::Model* landingpadModel = nullptr;
+
+mat4 roomModelMatrix;
+mat4 landingPadModelMatrix;
+mat4 fighterModelMatrix;
+
+float shipSpeed = 50;
+
+
+void loadShaders(bool is_reload)
+{
+	GLuint shader = labhelper::loadShaderProgram("../src/simple.vert", "../src/simple.frag",
+		is_reload);
+	if (shader != 0)
+	{
+		simpleShaderProgram = shader;
+	}
+
+	shader = labhelper::loadShaderProgram("../src/fullscreenQuad.vert", "../src/background.frag",
+		is_reload);
+	if (shader != 0)
+	{
+		backgroundProgram = shader;
+	}
+
+	shader = labhelper::loadShaderProgram("../src/shading.vert", "../src/shading.frag", is_reload);
+	if (shader != 0)
+	{
+		shaderProgram = shader;
+	}
+}
+
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -50,154 +121,109 @@ GLuint shaderProgram;
 void initialize()
 {
 	ENSURE_INITIALIZE_ONLY_ONCE();
-	std::cout << "passed ENSURE_INITIALIZE_ONLY_ONCE();" << std::endl;
 
-	//////////////////////////////////////////////////////////////////////////////
-	// Vertex positions
-	//////////////////////////////////////////////////////////////////////////////
-	// Define the positions for each of the three vertices of the triangle
-	const float positions[] = {
-		//	 X      Y     Z
-		0.0f,  0.5f,  1.0f, // v0
-		-0.5f, -0.5f, 1.0f, // v1
-		0.5f,  -0.5f, 1.0f  // v2
-	};
-	// Create a handle for the position vertex buffer object
-	// See OpenGL Spec §2.9 Buffer Objects
-	// - http://www.cse.chalmers.se/edu/course/TDA361/glspec30.20080923.pdf#page=54
-	GLuint positionBuffer;
-	glGenBuffers(1, &positionBuffer);
-	// Set the newly created buffer as the current one
-	glBindBuffer(GL_ARRAY_BUFFER, positionBuffer);
-	// Send the vertex position data to the current buffer
-	glBufferData(GL_ARRAY_BUFFER, labhelper::array_length(positions) * sizeof(float), positions,
-	             GL_STATIC_DRAW);
-	std::cout << "passed first three gl buffer calls" << std::endl;
+	///////////////////////////////////////////////////////////////////////
+	//		Load Shaders
+	///////////////////////////////////////////////////////////////////////
+	loadShaders(false);
 
-	//////////////////////////////////////////////////////////////////////////////
-	// Vertex colors
-	//
-	// Task 3: Change these colors to something more fun.
-	//////////////////////////////////////////////////////////////////////////////
-	// Define the colors for each of the three vertices of the triangle
-	const float colors[] = {
-		//   R     G     B
-		1.0f, 1.0f, 1.0f, // White
-		1.0f, 1.0f, 1.0f, // White
-		1.0f, 1.0f, 1.0f  // White
-	};
-	// Create a handle for the vertex color buffer
-	GLuint colorBuffer;
-	glGenBuffers(1, &colorBuffer);
-	// Set the newly created buffer as the current one
-	glBindBuffer(GL_ARRAY_BUFFER, colorBuffer);
-	// Send the vertex color data to the current buffer
-	glBufferData(GL_ARRAY_BUFFER, labhelper::array_length(colors) * sizeof(float), colors, GL_STATIC_DRAW);
-	std::cout << "passed second set of three calls" << std::endl;
+	///////////////////////////////////////////////////////////////////////
+	// Load models and set up model matrices
+	///////////////////////////////////////////////////////////////////////
+	fighterModel = labhelper::loadModelFromOBJ("../scenes/space-ship.obj");
+	landingpadModel = labhelper::loadModelFromOBJ("../scenes/landingpad.obj");
 
-	//////////////////////////////////////////////////////////////////////////////
-	// Create a vertex array object and connect the vertex buffer objects to it
-	//
-	// See OpenGL Spec §2.10
-	// - http://www.cse.chalmers.se/edu/course/TDA361/glspec30.20080923.pdf#page=64
-	//////////////////////////////////////////////////////////////////////////////
-	glGenVertexArrays(1, &vertexArrayObject);
-	std::cout << "passed glGenVertexArrays(1, &vertexArrayObject);" << std::endl;
-	// Bind the vertex array object
-	// The following calls will affect this vertex array object.
-	glBindVertexArray(vertexArrayObject);
-	std::cout << "passed glBindVertexArray(vertexArrayObject);" << std::endl;
-	// Makes positionBuffer the current array buffer for subsequent calls.
-	glBindBuffer(GL_ARRAY_BUFFER, positionBuffer);
-	std::cout << "passed glBindBuffer(GL_ARRAY_BUFFER, positionBuffer);" << std::endl;
-	// Attaches positionBuffer to vertexArrayObject, in the 0th attribute location
-	glVertexAttribPointer(0, 3, GL_FLOAT, false /*normalized*/, 0 /*stride*/, 0 /*offset*/);
-	std::cout << "passed glVertexAttribPointer(0, 3, GL_FLOAT, false /*normalized*/, 0 /*stride*/, 0 /*offset*/);" << std::endl;
-	// Makes colorBuffer the current array buffer for subsequent calls.
-	glBindBuffer(GL_ARRAY_BUFFER, colorBuffer);
-	// Attaches colorBuffer to vertexArrayObject, in the 1st attribute location
-	glVertexAttribPointer(1, 3, GL_FLOAT, false /*normalized*/, 0 /*stride*/, 0 /*offset*/);
-	glEnableVertexAttribArray(0); // Enable the vertex position attribute
-	glEnableVertexAttribArray(1); // Enable the vertex color attribute
-	std::cout << "passed third bigger set of calls" << std::endl;
-	//////////////////////////////////////////////////////////////////////////////
-	// Task 4: Add two new triangles. First by creating another vertex array
-	//		   object, and then by adding a triangle to an existing VAO.
-	//////////////////////////////////////////////////////////////////////////////
+	roomModelMatrix = mat4(1.0f);
+	fighterModelMatrix = translate(15.0f * worldUp);
+	landingPadModelMatrix = mat4(1.0f);
+
+	///////////////////////////////////////////////////////////////////////
+	// Load environment map
+	///////////////////////////////////////////////////////////////////////
+	const int roughnesses = 8;
+	std::vector<std::string> filenames;
+	for (int i = 0; i < roughnesses; i++)
+		filenames.push_back("../scenes/envmaps/" + envmap_base_name + "_dl_" + std::to_string(i) + ".hdr");
+
+	environmentMap = labhelper::loadHdrTexture("../scenes/envmaps/" + envmap_base_name + ".hdr");
+	irradianceMap = labhelper::loadHdrTexture("../scenes/envmaps/" + envmap_base_name + "_irradiance.hdr");
+	reflectionMap = labhelper::loadHdrMipmapTexture(filenames);
 
 
 
-	///////////////////////////////////////////////////////////////////////////
-	// Create shaders
-	///////////////////////////////////////////////////////////////////////////
+	glEnable(GL_DEPTH_TEST); // enable Z-buffering
+	glEnable(GL_CULL_FACE);  // enables backface culling
 
-	// See OpenGL spec §2.20 http://www.cse.chalmers.se/edu/course/TDA361/glspec30.20080923.pdf#page=104&zoom=75
-	GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-	GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
 
-	// Load text files for vertex and fragment shaders.
-	std::ifstream vs_file("../src/simple.vert");
-	std::string vs_src((std::istreambuf_iterator<char>(vs_file)), std::istreambuf_iterator<char>());
 
-	std::ifstream fs_file("../src/simple.frag");
-	std::string fs_src((std::istreambuf_iterator<char>(fs_file)), std::istreambuf_iterator<char>());
+}
 
-	const char* vs = vs_src.c_str();
-	const char* fs = fs_src.c_str();
+void debugDrawLight(const glm::mat4& viewMatrix,
+	const glm::mat4& projectionMatrix,
+	const glm::vec3& worldSpaceLightPos)
+{
+	mat4 modelMatrix = glm::translate(worldSpaceLightPos);
+	glUseProgram(simpleShaderProgram);
+	labhelper::setUniformSlow(simpleShaderProgram, "modelViewProjectionMatrix",
+		projectionMatrix * viewMatrix * modelMatrix);
+	labhelper::setUniformSlow(simpleShaderProgram, "material_color", vec3(1, 1, 1));
+	labhelper::debugDrawSphere();
+}
 
-	glShaderSource(vertexShader, 1, &vs, NULL);
-	glShaderSource(fragmentShader, 1, &fs, NULL);
 
-	// Compile the shader, translates into internal representation and checks for errors.
-	glCompileShader(vertexShader);
-	int compileOK;
-	// check for compiler errors in vertex shader.
-	glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &compileOK);
-	if(!compileOK)
-	{
-		std::string err = labhelper::GetShaderInfoLog(vertexShader);
-		labhelper::fatal_error(err);
-		return;
-	}
+void drawBackground(const mat4& viewMatrix, const mat4& projectionMatrix)
+{
+	glUseProgram(backgroundProgram);
+	labhelper::setUniformSlow(backgroundProgram, "environment_multiplier", environment_multiplier);
+	labhelper::setUniformSlow(backgroundProgram, "inv_PV", inverse(projectionMatrix * viewMatrix));
+	labhelper::setUniformSlow(backgroundProgram, "camera_pos", cameraPosition);
+	labhelper::drawFullScreenQuad();
+}
 
-	// Compile the shader, translates into internal representation and checks for errors.
-	glCompileShader(fragmentShader);
-	// check for compiler errors in fragment shader.
-	glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &compileOK);
-	if(!compileOK)
-	{
-		std::string err = labhelper::GetShaderInfoLog(fragmentShader);
-		labhelper::fatal_error(err);
-		return;
-	}
 
-	// Create a program object and attach the two shaders we have compiled, the program object contains
-	// both vertex and fragment shaders as well as information about uniforms and attributes common to both.
-	shaderProgram = glCreateProgram();
-	glAttachShader(shaderProgram, fragmentShader);
-	glAttachShader(shaderProgram, vertexShader);
+///////////////////////////////////////////////////////////////////////////////
+/// This function is used to draw the main objects on the scene
+///////////////////////////////////////////////////////////////////////////////
+void drawScene(GLuint currentShaderProgram,
+	const mat4& viewMatrix,
+	const mat4& projectionMatrix,
+	const mat4& lightViewMatrix,
+	const mat4& lightProjectionMatrix)
+{
+	glUseProgram(currentShaderProgram);
+	// Light source
+	vec4 viewSpaceLightPosition = viewMatrix * vec4(lightPosition, 1.0f);
+	labhelper::setUniformSlow(currentShaderProgram, "point_light_color", point_light_color);
+	labhelper::setUniformSlow(currentShaderProgram, "point_light_intensity_multiplier",
+		point_light_intensity_multiplier);
+	labhelper::setUniformSlow(currentShaderProgram, "viewSpaceLightPosition", vec3(viewSpaceLightPosition));
+	labhelper::setUniformSlow(currentShaderProgram, "viewSpaceLightDir",
+		normalize(vec3(viewMatrix * vec4(-lightPosition, 0.0f))));
 
-	// Now that the fragment and vertex shader has been attached, we no longer need these two separate objects and should delete them.
-	// The attachment to the shader program will keep them alive, as long as we keep the shaderProgram.
-	glDeleteShader(vertexShader);
-	glDeleteShader(fragmentShader);
 
-	// Link the different shaders that are bound to this program, this creates a final shader that
-	// we can use to render geometry with.
-	glLinkProgram(shaderProgram);
+	// Environment
+	labhelper::setUniformSlow(currentShaderProgram, "environment_multiplier", environment_multiplier);
 
-	// Check for linker errors, many errors, such as mismatched in and out variables between
-	// vertex/fragment shaders,  do not appear before linking.
-	{
-		GLint linkOk = 0;
-		glGetProgramiv(shaderProgram, GL_LINK_STATUS, &linkOk);
-		if(!linkOk)
-		{
-			std::string err = labhelper::GetShaderInfoLog(shaderProgram);
-			labhelper::fatal_error(err);
-			return;
-		}
-	}
+	// camera
+	labhelper::setUniformSlow(currentShaderProgram, "viewInverse", inverse(viewMatrix));
+
+	// landing pad
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
+		projectionMatrix * viewMatrix * landingPadModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * landingPadModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
+		inverse(transpose(viewMatrix * landingPadModelMatrix)));
+
+	labhelper::render(landingpadModel);
+
+	// Fighter
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
+		projectionMatrix * viewMatrix * fighterModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * fighterModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
+		inverse(transpose(viewMatrix * fighterModelMatrix)));
+
+	labhelper::render(fighterModel);
 }
 
 
@@ -207,34 +233,161 @@ void initialize()
 ///////////////////////////////////////////////////////////////////////////////
 void display(void)
 {
-	// The viewport determines how many pixels we are rasterizing to
-	int w, h;
-	SDL_GetWindowSize(g_window, &w, &h);
-	glViewport(0, 0, w, h); // Set viewport
-
-	glClearColor(g_clearColor[0], g_clearColor[1], g_clearColor[2], 1.0); // Set clear color
-	glClear(GL_BUFFER); // Clears the color buffer and the z-buffer
-	                    // Instead of glClear(GL_BUFFER) the call should be glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-	// We disable backface culling for this tutorial, otherwise care must be taken with the winding order
-	// of the vertices. It is however a lot faster to enable culling when drawing large scenes.
-	glDisable(GL_CULL_FACE);
-
-	// Set the Shader Program to use
-	glUseProgram(shaderProgram); // Set the shader program to use for this draw call
-
-	// Task 5: Set the `triangleColor` uniform in the shader to `g_triangleColor`
-
-	// Bind the vertex array object that contains all the vertex data.
-	glBindVertexArray(vertexArrayObject);
-	// Submit triangles from currently bound vertex array object.
-	glDrawArrays(GL_TRIANGLES, 0, 3); // Render 1 triangle
+	///////////////////////////////////////////////////////////////////////////
+	// Check if window size has changed and resize buffers as needed
+	///////////////////////////////////////////////////////////////////////////
+	{
+		int w, h;
+		SDL_GetWindowSize(g_window, &w, &h);
+		if (w != windowWidth || h != windowHeight)
+		{
+			windowWidth = w;
+			windowHeight = h;
+		}
+	}
 
 
-	// Task 4: Render the second VAO
-	// Task 5: Set the `triangleColor` uniform to white
+	///////////////////////////////////////////////////////////////////////////
+	// setup matrices
+	///////////////////////////////////////////////////////////////////////////
+	mat4 projMatrix = perspective(radians(45.0f), float(windowWidth) / float(windowHeight), 5.0f, 2000.0f);
+	mat4 viewMatrix = lookAt(cameraPosition, cameraPosition + cameraDirection, worldUp);
 
-	glUseProgram(0); // "unsets" the current shader program. Not really necessary.
+	vec4 lightStartPosition = vec4(40.0f, 40.0f, 0.0f, 1.0f);
+	lightPosition = vec3(rotate(currentTime, worldUp) * lightStartPosition);
+	mat4 lightViewMatrix = lookAt(lightPosition, vec3(0.0f), worldUp);
+	mat4 lightProjMatrix = perspective(radians(45.0f), 1.0f, 25.0f, 100.0f);
+
+	///////////////////////////////////////////////////////////////////////////
+	// Bind the environment map(s) to unused texture units
+	///////////////////////////////////////////////////////////////////////////
+	glActiveTexture(GL_TEXTURE6);
+	glBindTexture(GL_TEXTURE_2D, environmentMap);
+	glActiveTexture(GL_TEXTURE7);
+	glBindTexture(GL_TEXTURE_2D, irradianceMap);
+	glActiveTexture(GL_TEXTURE8);
+	glBindTexture(GL_TEXTURE_2D, reflectionMap);
+	glActiveTexture(GL_TEXTURE0);
+
+
+
+	///////////////////////////////////////////////////////////////////////////
+	// Draw from camera
+	///////////////////////////////////////////////////////////////////////////
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, windowWidth, windowHeight);
+	glClearColor(0.2f, 0.2f, 0.8f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	drawBackground(viewMatrix, projMatrix);
+	drawScene(shaderProgram, viewMatrix, projMatrix, lightViewMatrix, lightProjMatrix);
+	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
+
+
+
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+/// This function is used to update the scene according to user input
+///////////////////////////////////////////////////////////////////////////////
+bool handleEvents(void)
+{
+	// Allow ImGui to capture events.
+	ImGuiIO& io = ImGui::GetIO();
+
+	// check events (keyboard among other)
+	SDL_Event event;
+	bool quitEvent = false;
+	while (SDL_PollEvent(&event))
+	{
+		ImGui_ImplSdlGL3_ProcessEvent(&event);
+
+		if (event.type == SDL_QUIT || (event.type == SDL_KEYUP && event.key.keysym.sym == SDLK_ESCAPE))
+		{
+			quitEvent = true;
+		}
+		else if (event.type == SDL_KEYUP && event.key.keysym.sym == SDLK_g)
+		{
+			showUI = !showUI;
+		}
+		else if (event.type == SDL_KEYUP && event.key.keysym.sym == SDLK_PRINTSCREEN)
+		{
+			labhelper::saveScreenshot();
+		}
+		if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT
+			&& (!showUI || !io.WantCaptureMouse))
+		{
+			g_isMouseDragging = true;
+			int x;
+			int y;
+			SDL_GetMouseState(&x, &y);
+			g_prevMouseCoords.x = x;
+			g_prevMouseCoords.y = y;
+		}
+
+		if (!(SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT)))
+		{
+			g_isMouseDragging = false;
+		}
+
+		if (event.type == SDL_MOUSEMOTION && g_isMouseDragging && !io.WantCaptureMouse)
+		{
+			// More info at https://wiki.libsdl.org/SDL_MouseMotionEvent
+			int delta_x = event.motion.x - g_prevMouseCoords.x;
+			int delta_y = event.motion.y - g_prevMouseCoords.y;
+			float rotationSpeed = 0.4f;
+			mat4 yaw = rotate(rotationSpeed * deltaTime * -delta_x, worldUp);
+			mat4 pitch = rotate(rotationSpeed * deltaTime * -delta_y,
+				normalize(cross(cameraDirection, worldUp)));
+			cameraDirection = vec3(pitch * yaw * vec4(cameraDirection, 0.0f));
+			g_prevMouseCoords.x = event.motion.x;
+			g_prevMouseCoords.y = event.motion.y;
+		}
+	}
+
+	// check keyboard state (which keys are still pressed)
+	const uint8_t* state = SDL_GetKeyboardState(nullptr);
+
+	static bool was_shift_pressed = state[SDL_SCANCODE_LSHIFT];
+	if (was_shift_pressed && !state[SDL_SCANCODE_LSHIFT])
+	{
+		cameraSpeed /= 5;
+	}
+	if (!was_shift_pressed && state[SDL_SCANCODE_LSHIFT])
+	{
+		cameraSpeed *= 5;
+	}
+	was_shift_pressed = state[SDL_SCANCODE_LSHIFT];
+
+
+	vec3 cameraRight = cross(cameraDirection, worldUp);
+
+	if (state[SDL_SCANCODE_W])
+	{
+		cameraPosition += cameraSpeed * deltaTime * cameraDirection;
+	}
+	if (state[SDL_SCANCODE_S])
+	{
+		cameraPosition -= cameraSpeed * deltaTime * cameraDirection;
+	}
+	if (state[SDL_SCANCODE_A])
+	{
+		cameraPosition -= cameraSpeed * deltaTime * cameraRight;
+	}
+	if (state[SDL_SCANCODE_D])
+	{
+		cameraPosition += cameraSpeed * deltaTime * cameraRight;
+	}
+	if (state[SDL_SCANCODE_Q])
+	{
+		cameraPosition -= cameraSpeed * deltaTime * worldUp;
+	}
+	if (state[SDL_SCANCODE_E])
+	{
+		cameraPosition += cameraSpeed * deltaTime * worldUp;
+	}
+	return quitEvent;
 }
 
 
@@ -244,56 +397,42 @@ void display(void)
 void gui()
 {
 	// ----------------- Set variables --------------------------
-	ImGui::ColorEdit3("clear color", g_clearColor);
-
-	// Task 5: Add a new ColorEdit3 control to modify the g_triangleColor variable
-
 	ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
-	            ImGui::GetIO().Framerate);
+		ImGui::GetIO().Framerate);
 	// ----------------------------------------------------------
 }
 
 int main(int argc, char* argv[])
 {
-	g_window = labhelper::init_window_SDL("OpenGL Lab 1", 600, 600);
-	std::cout << "labhelper::init_window_SDL returned " << g_window << std::endl;
+	g_window = labhelper::init_window_SDL("OpenGL Project");
 
 	initialize();
-	std::cout << "initialize returned " << std::endl;
 
-	// render-loop
 	bool stopRendering = false;
-	while(!stopRendering)
+	auto startTime = std::chrono::system_clock::now();
+
+	while (!stopRendering)
 	{
+		//update currentTime
+		std::chrono::duration<float> timeSinceStart = std::chrono::system_clock::now() - startTime;
+		previousTime = currentTime;
+		currentTime = timeSinceStart.count();
+		deltaTime = currentTime - previousTime;
+
 		// Inform imgui of new frame
 		ImGui_ImplSdlGL3_NewFrame(g_window);
 
-		// Check events (keyboard among other)
-		SDL_Event event;
-		while(SDL_PollEvent(&event))
-		{
-			// Allow ImGui to capture events.
-			ImGui_ImplSdlGL3_ProcessEvent(&event);
+		// check events (keyboard among other)
+		stopRendering = handleEvents();
 
-			// And do our own handling of events.
-			if(event.type == SDL_QUIT || (event.type == SDL_KEYUP && event.key.keysym.sym == SDLK_ESCAPE))
-			{
-				stopRendering = true;
-			}
-			else if(event.type == SDL_KEYUP && event.key.keysym.sym == SDLK_PRINTSCREEN)
-			{
-				labhelper::saveScreenshot();
-			}
-		}
-
-		// First render our geometry.
+		// render to window
 		display();
 
-		///////////////////////////////////////////////////////////////////////////
-		// Task 1: Uncomment the call to gui below to show the GUI
-		///////////////////////////////////////////////////////////////////////////
-		// Then render overlay GUI.
-		// gui();
+		// Render overlay GUI.
+		if (showUI)
+		{
+			gui();
+		}
 
 		// Render the GUI.
 		ImGui::Render();
@@ -301,10 +440,11 @@ int main(int argc, char* argv[])
 		// Swap front and back buffer. This frame will now been displayed.
 		SDL_GL_SwapWindow(g_window);
 	}
+	// Free Models
+	labhelper::freeModel(fighterModel);
+	labhelper::freeModel(landingpadModel);
 
 	// Shut down everything. This includes the window and all other subsystems.
 	labhelper::shutDown(g_window);
-	
-	std::cout << "Returning 0" << std::endl;
 	return 0;
 }
