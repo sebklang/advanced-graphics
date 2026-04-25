@@ -9,6 +9,8 @@ extern "C" _declspec(dllexport) unsigned int NvOptimusEnablement = 0x00000001;
 #include <cstdlib>
 #include <algorithm>
 #include <chrono>
+#include <fstream>
+#include <iostream>
 
 #include <labhelper.h>
 #include <imgui.h>
@@ -48,6 +50,7 @@ bool g_isMouseDragging = false;
 GLuint shaderProgram;       // Shader for rendering the final image
 GLuint simpleShaderProgram; // Shader used to draw the shadow map
 GLuint backgroundProgram;
+GLuint terrainGenProgram;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Environment
@@ -89,6 +92,8 @@ mat4 fighterModelMatrix;
 
 float shipSpeed = 50;
 
+GLuint chunkGridVAO = 0;
+std::vector<GLuint> chunkVAOs;
 
 void loadShaders(bool is_reload)
 {
@@ -111,6 +116,21 @@ void loadShaders(bool is_reload)
 	{
 		shaderProgram = shader;
 	}
+
+	GLuint terrainGenShader = glCreateShader(GL_VERTEX_SHADER);
+	std::ifstream vs_file("../src/generateTerrain.vert");
+	std::string vs_src(std::istreambuf_iterator<char>(vs_file), std::istreambuf_iterator<char>{});
+	const char* vs = vs_src.c_str();
+	glShaderSource(terrainGenShader, 1, &vs, nullptr);
+	glCompileShader(terrainGenShader);
+	terrainGenProgram = glCreateProgram();
+	glAttachShader(terrainGenProgram, terrainGenShader);
+	glDeleteShader(terrainGenShader);
+	if (!is_reload)
+		CHECK_GL_ERROR();
+	const char* varyings[] = { "gl_Position" };
+	glTransformFeedbackVaryings(terrainGenProgram, 1, varyings, GL_SEPARATE_ATTRIBS);
+	labhelper::linkShaderProgram(terrainGenProgram, is_reload);
 }
 
 
@@ -149,13 +169,53 @@ void initialize()
 	irradianceMap = labhelper::loadHdrTexture("../scenes/envmaps/" + envmap_base_name + "_irradiance.hdr");
 	reflectionMap = labhelper::loadHdrMipmapTexture(filenames);
 
+	// Generate and upload base grid for terrain chunk
+	constexpr int baseW = 63; // number of quads
+	constexpr int baseH = 63;
+	constexpr GLfloat quadW = 1.0 / baseW;
+	constexpr GLfloat quadH = 1.0 / baseH;
+	vec2 triangles[6 * baseW * baseH]{};
 
+	for (int i = 0; i < baseW; i++) {
+		for (int j = 0; j < baseH; j++) {
+			int idx = 6 * (baseW * i + j);
+			triangles[idx + 0] = { quadW * (i + 0), quadH * (j + 0) };
+			triangles[idx + 1] = { quadW * (i + 1), quadH * (j + 0) };
+			triangles[idx + 2] = { quadW * (i + 0), quadH * (j + 1) };
+			triangles[idx + 3] = { quadW * (i + 0), quadH * (j + 1) };
+			triangles[idx + 4] = { quadW * (i + 1), quadH * (j + 0) };
+			triangles[idx + 5] = { quadW * (i + 1), quadH * (j + 1) };
+		}
+	}
 
+	glGenVertexArrays(1, &chunkGridVAO);
+	glBindVertexArray(chunkGridVAO);
+	GLuint chunkGridVBO;
+	glGenBuffers(1, &chunkGridVBO);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkGridVBO);
+	glVertexAttribPointer(0, 2, GL_FLOAT, false, 0, 0);
+	glBufferStorage(GL_ARRAY_BUFFER, sizeof(triangles), triangles, 0);
+	
+	// Test: generate one chunk (move this later to happen procedurally)
+	glUseProgram(terrainGenProgram);
+	GLuint testChunkVBO;
+	glGenBuffers(1, &testChunkVBO);
+	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, testChunkVBO);
+	glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles) * 3/2, NULL, GL_STATIC_COPY);
+	glBeginTransformFeedback(GL_TRIANGLES);
+	glDrawArrays(GL_TRIANGLES, 0, sizeof(triangles) / sizeof(triangles[0]));
+	glEndTransformFeedback();
+	glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
+	GLuint testChunkVAO;
+	glGenVertexArrays(1, &testChunkVAO);
+	glBindVertexArray(testChunkVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, testChunkVBO);
+	glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
+	// testChunkVAO should now have the finished testChunkVBO as its array buffer
+	glUseProgram(0);
+	
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
 	glEnable(GL_CULL_FACE);  // enables backface culling
-
-
-
 }
 
 void debugDrawLight(const glm::mat4& viewMatrix,
