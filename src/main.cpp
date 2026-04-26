@@ -51,6 +51,7 @@ GLuint shaderProgram;       // Shader for rendering the final image
 GLuint simpleShaderProgram; // Shader used to draw the shadow map
 GLuint backgroundProgram;
 GLuint terrainGenProgram;
+GLuint chunkProgram;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Environment
@@ -76,7 +77,7 @@ float point_light_intensity_multiplier = 10000.0f;
 ///////////////////////////////////////////////////////////////////////////////
 vec3 cameraPosition(-70.0f, 50.0f, 70.0f);
 vec3 cameraDirection = normalize(vec3(0.0f) - cameraPosition);
-float cameraSpeed = 10.f;
+float cameraSpeed = 50.f;
 
 vec3 worldUp(0.0f, 1.0f, 0.0f);
 
@@ -89,12 +90,57 @@ labhelper::Model* landingpadModel = nullptr;
 mat4 roomModelMatrix;
 mat4 landingPadModelMatrix;
 mat4 fighterModelMatrix;
-mat4 testChunkModelMatrix;
+mat4 chunkModelMatrix;
 
 float shipSpeed = 50;
 
+constexpr int chunkWQuads = 2;
+constexpr int chunkHQuads = 2;
+constexpr int chunkNumVertices = 6 * chunkWQuads * chunkHQuads;
+constexpr int chunkGridBufSz = chunkNumVertices * 2 * sizeof(float);
+constexpr int chunkBufSz = chunkNumVertices * 3 * sizeof(float);
 GLuint chunkGridVAO = 0;
 std::vector<GLuint> chunkVAOs;
+
+GLuint generateChunk(float x0, float z0) {
+	glUseProgram(terrainGenProgram);
+	GLuint chunkVBO[3]; // positions, normals, texCoords (order agrees with glTransformFeedbackVaryings)
+	glGenBuffers(3, chunkVBO);
+
+	for (int i = 0; i < 2; i++) { // positions and normals
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, chunkVBO[i]);
+		glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, chunkBufSz, NULL, GL_STATIC_COPY);
+	}
+	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 2, chunkVBO[2]); // texCoords
+	glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, chunkGridBufSz, NULL, GL_STATIC_COPY);
+
+	glBindVertexArray(chunkGridVAO);
+	glEnable(GL_RASTERIZER_DISCARD);
+	glBeginTransformFeedback(GL_TRIANGLES);
+	labhelper::setUniformSlow(terrainGenProgram, "x0", x0);
+	labhelper::setUniformSlow(terrainGenProgram, "z0", z0);
+	glDrawArrays(GL_TRIANGLES, 0, chunkNumVertices);
+	glEndTransformFeedback();
+	glDisable(GL_RASTERIZER_DISCARD);
+	for (int i = 0; i < 3; i++)
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, 0);
+
+	GLuint chunkVAO;
+	glGenVertexArrays(1, &chunkVAO);
+	glBindVertexArray(chunkVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[0]);
+	glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[1]);
+	glVertexAttribPointer(1, 3, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(1);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[2]);
+	glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(2);
+	// chunkVAO should now have the finished chunkVBO as its array buffers
+	glUseProgram(0);
+	return chunkVAO;
+}
 
 void loadShaders(bool is_reload)
 {
@@ -118,6 +164,13 @@ void loadShaders(bool is_reload)
 		shaderProgram = shader;
 	}
 
+	shader = labhelper::loadShaderProgram("../src/chunk.vert", "../src/chunk.frag", is_reload);
+	if (shader != 0)
+	{
+		chunkProgram = shader;
+	}
+	else abort();
+
 	GLuint terrainGenShader = glCreateShader(GL_VERTEX_SHADER);
 	std::ifstream vs_file("../src/generateTerrain.vert");
 	std::string vs_src(std::istreambuf_iterator<char>(vs_file), std::istreambuf_iterator<char>{});
@@ -130,7 +183,7 @@ void loadShaders(bool is_reload)
 	if (!is_reload)
 		CHECK_GL_ERROR();
 	const char* varyings[] = { "position", "normal", "texCoord" };
-	glTransformFeedbackVaryings(terrainGenProgram, 1, varyings, GL_SEPARATE_ATTRIBS);
+	glTransformFeedbackVaryings(terrainGenProgram, 3, varyings, GL_SEPARATE_ATTRIBS);
 	labhelper::linkShaderProgram(terrainGenProgram, is_reload);
 }
 
@@ -157,7 +210,7 @@ void initialize()
 	roomModelMatrix = mat4(1.0f);
 	fighterModelMatrix = translate(15.0f * worldUp);
 	landingPadModelMatrix = mat4(1.0f);
-	testChunkModelMatrix = translate(30.0f * worldUp) * scale(vec3(5.0f));
+	chunkModelMatrix = translate(30.0f * worldUp);
 
 	///////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -172,15 +225,13 @@ void initialize()
 	reflectionMap = labhelper::loadHdrMipmapTexture(filenames);
 
 	// Generate and upload base grid for terrain chunk
-	constexpr int baseW = 63; // number of quads
-	constexpr int baseH = 63;
-	constexpr GLfloat quadW = 1.0 / baseW;
-	constexpr GLfloat quadH = 1.0 / baseH;
-	vec2 triangles[6 * baseW * baseH]{};
+	constexpr GLfloat quadW = 1.0 / chunkWQuads;
+	constexpr GLfloat quadH = 1.0 / chunkHQuads;
+	vec2 triangles[6 * chunkWQuads * chunkHQuads]{};
 
-	for (int i = 0; i < baseW; i++) {
-		for (int j = 0; j < baseH; j++) {
-			int idx = 6 * (baseH * i + j);
+	for (int i = 0; i < chunkWQuads; i++) {
+		for (int j = 0; j < chunkHQuads; j++) {
+			int idx = 6 * (chunkHQuads * i + j);
 			triangles[idx + 0] = { quadW * (i + 0), quadH * (j + 0) };
 			triangles[idx + 1] = { quadW * (i + 0), quadH * (j + 1) };
 			triangles[idx + 2] = { quadW * (i + 1), quadH * (j + 1) };
@@ -199,42 +250,15 @@ void initialize()
 	glVertexAttribPointer(0, 2, GL_FLOAT, false, 0, 0);
 	glEnableVertexAttribArray(0);
 	
-	// Test: generate one chunk (move this later to happen procedurally)
-	glUseProgram(terrainGenProgram);
-	GLuint chunkVBO[3]; // positions, normals, texCoords (order agrees with glTransformFeedbackVaryings)
-	glGenBuffers(3, chunkVBO);
-
-	for (int i = 0; i < 2; i++) { // positions and normals
-		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, chunkVBO[i]);
-		glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles) * 3 / 2, NULL, GL_STATIC_COPY);
+	// Generate chunks
+	for (int i = 0; i < 32; i++) {
+		for (int j = 0; j < 32; j++) {
+			float x0 = i;
+			float z0 = j;
+			chunkVAOs.push_back(generateChunk(x0, z0));
+		}
 	}
-	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 2, chunkVBO[2]); // texCoords
-	glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles), NULL, GL_STATIC_COPY);
 
-	glEnable(GL_RASTERIZER_DISCARD);
-	glBeginTransformFeedback(GL_TRIANGLES);
-	glDrawArrays(GL_TRIANGLES, 0, sizeof(triangles) / sizeof(triangles[0]));
-	glEndTransformFeedback();
-	glDisable(GL_RASTERIZER_DISCARD);
-	for (int i = 0; i < 3; i++)
-		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, 0);
-
-	GLuint chunkVAO;
-	glGenVertexArrays(1, &chunkVAO);
-	glBindVertexArray(chunkVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[0]);
-	glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
-	glEnableVertexAttribArray(0);
-	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[1]);
-	glVertexAttribPointer(1, 3, GL_FLOAT, false, 0, 0);
-	glEnableVertexAttribArray(1);
-	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[2]);
-	glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0);
-	glEnableVertexAttribArray(2);
-	// chunkVAO should now have the finished chunkVBO as its array buffers
-	chunkVAOs.push_back(chunkVAO);
-	glUseProgram(0);
-	
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
 	glEnable(GL_CULL_FACE);  // enables backface culling
 }
@@ -306,16 +330,20 @@ void drawScene(GLuint currentShaderProgram,
 
 	labhelper::render(fighterModel);
 
-	// Draw test chunk
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
-		projectionMatrix * viewMatrix * testChunkModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * testChunkModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
-		inverse(transpose(viewMatrix * testChunkModelMatrix)));
-	
-	glBindVertexArray(chunkVAOs[0]);
-	glDrawArrays(GL_TRIANGLES, 0, 6 * 63 * 63); // todo: save count somewhere
-	glBindVertexArray(0);
+	// Display chunks
+	glUseProgram(chunkProgram);
+	labhelper::setUniformSlow(chunkProgram, "modelViewProjectionMatrix",
+		projectionMatrix * viewMatrix * chunkModelMatrix);
+	labhelper::setUniformSlow(chunkProgram, "modelViewMatrix", viewMatrix * chunkModelMatrix);
+	labhelper::setUniformSlow(chunkProgram, "normalMatrix",
+		inverse(transpose(viewMatrix * chunkModelMatrix)));
+
+	for (GLuint chunk : chunkVAOs) {
+		glBindVertexArray(chunk);
+		glDrawArrays(GL_TRIANGLES, 0, chunkNumVertices); // todo: save count somewhere
+		glBindVertexArray(0);
+	}
+	glUseProgram(currentShaderProgram);
 }
 
 
@@ -444,16 +472,16 @@ bool handleEvents(void)
 	static bool was_shift_pressed = state[SDL_SCANCODE_LSHIFT];
 	if (was_shift_pressed && !state[SDL_SCANCODE_LSHIFT])
 	{
-		cameraSpeed /= 5;
+		cameraSpeed *= 5;
 	}
 	if (!was_shift_pressed && state[SDL_SCANCODE_LSHIFT])
 	{
-		cameraSpeed *= 5;
+		cameraSpeed /= 5;
 	}
 	was_shift_pressed = state[SDL_SCANCODE_LSHIFT];
 
 
-	vec3 cameraRight = cross(cameraDirection, worldUp);
+	vec3 cameraRight = normalize(cross(cameraDirection, worldUp));
 
 	if (state[SDL_SCANCODE_W])
 	{
@@ -473,11 +501,11 @@ bool handleEvents(void)
 	}
 	if (state[SDL_SCANCODE_Q])
 	{
-		cameraPosition -= cameraSpeed * deltaTime * worldUp;
+		cameraPosition -= cameraSpeed * deltaTime * cross(cameraRight, cameraDirection);
 	}
 	if (state[SDL_SCANCODE_E])
 	{
-		cameraPosition += cameraSpeed * deltaTime * worldUp;
+		cameraPosition += cameraSpeed * deltaTime * cross(cameraRight, cameraDirection);
 	}
 	return quitEvent;
 }

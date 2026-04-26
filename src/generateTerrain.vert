@@ -3,7 +3,8 @@
 
 layout(location = 0) in vec2 v;
 
-uniform mat4 modelViewProjectionMatrix;
+uniform float x0;
+uniform float z0;
 
 out vec3 position;
 out vec3 normal;
@@ -11,15 +12,17 @@ out vec2 texCoord;
 
 void main()
 {
-	float xfreq = 5;
-	float zfreq = 3;
-	float y     =  cos(xfreq * v[0]) * cos(zfreq * v[1]);
-	float dydx  = -xfreq * sin(xfreq * v[0]) * cos(zfreq * v[1]);
-	float dydz  = -zfreq * sin(zfreq * v[1]) * cos(xfreq * v[0]);
+	float x = x0 + v[0];
+	float z = z0 + v[1];
+	float xfreq = 0.20;
+	float zfreq = 0.36;
+	float y     =  cos(xfreq * x) * cos(zfreq * z);
+	float dydx  = -xfreq * sin(xfreq * x) * cos(zfreq * z);
+	float dydz  = -zfreq * sin(zfreq * z) * cos(xfreq * x);
 
-	position  = vec3(v[0], y, v[1]);
+	position  = vec3(x, y, z);
 	normal    = normalize(vec3(-dydx, 1.0, -dydz));
 	texCoord  = v; // todo
 
-	gl_Position = modelViewProjectionMatrix * vec4(position, 1.0);
+	gl_Position = vec4(position, 1.0);
 }
