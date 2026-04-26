@@ -94,8 +94,8 @@ mat4 chunkModelMatrix;
 
 float shipSpeed = 50;
 
-constexpr int chunkWQuads = 2;
-constexpr int chunkHQuads = 2;
+constexpr int chunkWQuads = 32;
+constexpr int chunkHQuads = 32;
 constexpr int chunkNumVertices = 6 * chunkWQuads * chunkHQuads;
 constexpr int chunkGridBufSz = chunkNumVertices * 2 * sizeof(float);
 constexpr int chunkBufSz = chunkNumVertices * 3 * sizeof(float);
@@ -210,7 +210,7 @@ void initialize()
 	roomModelMatrix = mat4(1.0f);
 	fighterModelMatrix = translate(15.0f * worldUp);
 	landingPadModelMatrix = mat4(1.0f);
-	chunkModelMatrix = translate(30.0f * worldUp);
+	chunkModelMatrix =  scale(translate(30.0f * worldUp), vec3(256.0f, 20.0f, 256.0f));
 
 	///////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -251,8 +251,8 @@ void initialize()
 	glEnableVertexAttribArray(0);
 	
 	// Generate chunks
-	for (int i = 0; i < 32; i++) {
-		for (int j = 0; j < 32; j++) {
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
 			float x0 = i;
 			float z0 = j;
 			chunkVAOs.push_back(generateChunk(x0, z0));
@@ -340,7 +340,7 @@ void drawScene(GLuint currentShaderProgram,
 
 	for (GLuint chunk : chunkVAOs) {
 		glBindVertexArray(chunk);
-		glDrawArrays(GL_TRIANGLES, 0, chunkNumVertices); // todo: save count somewhere
+		glDrawArrays(GL_TRIANGLES, 0, chunkNumVertices);
 		glBindVertexArray(0);
 	}
 	glUseProgram(currentShaderProgram);

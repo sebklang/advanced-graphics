@@ -14,8 +14,8 @@ void main()
 {
 	float x = x0 + v[0];
 	float z = z0 + v[1];
-	float xfreq = 0.20;
-	float zfreq = 0.36;
+	float xfreq = 2 * 1.7;
+	float zfreq = 2 * 2.1;
 	float y     =  cos(xfreq * x) * cos(zfreq * z);
 	float dydx  = -xfreq * sin(xfreq * x) * cos(zfreq * z);
 	float dydz  = -zfreq * sin(zfreq * z) * cos(xfreq * x);
