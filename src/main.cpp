@@ -89,6 +89,7 @@ labhelper::Model* landingpadModel = nullptr;
 mat4 roomModelMatrix;
 mat4 landingPadModelMatrix;
 mat4 fighterModelMatrix;
+mat4 testChunkModelMatrix;
 
 float shipSpeed = 50;
 
@@ -128,7 +129,7 @@ void loadShaders(bool is_reload)
 	glDeleteShader(terrainGenShader);
 	if (!is_reload)
 		CHECK_GL_ERROR();
-	const char* varyings[] = { "gl_Position" };
+	const char* varyings[] = { "position", "normal", "texCoord" };
 	glTransformFeedbackVaryings(terrainGenProgram, 1, varyings, GL_SEPARATE_ATTRIBS);
 	labhelper::linkShaderProgram(terrainGenProgram, is_reload);
 }
@@ -156,6 +157,7 @@ void initialize()
 	roomModelMatrix = mat4(1.0f);
 	fighterModelMatrix = translate(15.0f * worldUp);
 	landingPadModelMatrix = mat4(1.0f);
+	testChunkModelMatrix = translate(30.0f * worldUp) * scale(vec3(5.0f));
 
 	///////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -178,13 +180,13 @@ void initialize()
 
 	for (int i = 0; i < baseW; i++) {
 		for (int j = 0; j < baseH; j++) {
-			int idx = 6 * (baseW * i + j);
+			int idx = 6 * (baseH * i + j);
 			triangles[idx + 0] = { quadW * (i + 0), quadH * (j + 0) };
-			triangles[idx + 1] = { quadW * (i + 1), quadH * (j + 0) };
-			triangles[idx + 2] = { quadW * (i + 0), quadH * (j + 1) };
-			triangles[idx + 3] = { quadW * (i + 0), quadH * (j + 1) };
+			triangles[idx + 1] = { quadW * (i + 0), quadH * (j + 1) };
+			triangles[idx + 2] = { quadW * (i + 1), quadH * (j + 1) };
+			triangles[idx + 3] = { quadW * (i + 1), quadH * (j + 1) };
 			triangles[idx + 4] = { quadW * (i + 1), quadH * (j + 0) };
-			triangles[idx + 5] = { quadW * (i + 1), quadH * (j + 1) };
+			triangles[idx + 5] = { quadW * (i + 0), quadH * (j + 0) };
 		}
 	}
 
@@ -193,25 +195,44 @@ void initialize()
 	GLuint chunkGridVBO;
 	glGenBuffers(1, &chunkGridVBO);
 	glBindBuffer(GL_ARRAY_BUFFER, chunkGridVBO);
-	glVertexAttribPointer(0, 2, GL_FLOAT, false, 0, 0);
 	glBufferStorage(GL_ARRAY_BUFFER, sizeof(triangles), triangles, 0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(0);
 	
 	// Test: generate one chunk (move this later to happen procedurally)
 	glUseProgram(terrainGenProgram);
-	GLuint testChunkVBO;
-	glGenBuffers(1, &testChunkVBO);
-	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, testChunkVBO);
-	glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles) * 3/2, NULL, GL_STATIC_COPY);
+	GLuint chunkVBO[3]; // positions, normals, texCoords (order agrees with glTransformFeedbackVaryings)
+	glGenBuffers(3, chunkVBO);
+
+	for (int i = 0; i < 2; i++) { // positions and normals
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, chunkVBO[i]);
+		glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles) * 3 / 2, NULL, GL_STATIC_COPY);
+	}
+	glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 2, chunkVBO[2]); // texCoords
+	glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(triangles), NULL, GL_STATIC_COPY);
+
+	glEnable(GL_RASTERIZER_DISCARD);
 	glBeginTransformFeedback(GL_TRIANGLES);
 	glDrawArrays(GL_TRIANGLES, 0, sizeof(triangles) / sizeof(triangles[0]));
 	glEndTransformFeedback();
-	glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
-	GLuint testChunkVAO;
-	glGenVertexArrays(1, &testChunkVAO);
-	glBindVertexArray(testChunkVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, testChunkVBO);
+	glDisable(GL_RASTERIZER_DISCARD);
+	for (int i = 0; i < 3; i++)
+		glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, 0);
+
+	GLuint chunkVAO;
+	glGenVertexArrays(1, &chunkVAO);
+	glBindVertexArray(chunkVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[0]);
 	glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0);
-	// testChunkVAO should now have the finished testChunkVBO as its array buffer
+	glEnableVertexAttribArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[1]);
+	glVertexAttribPointer(1, 3, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(1);
+	glBindBuffer(GL_ARRAY_BUFFER, chunkVBO[2]);
+	glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0);
+	glEnableVertexAttribArray(2);
+	// chunkVAO should now have the finished chunkVBO as its array buffers
+	chunkVAOs.push_back(chunkVAO);
 	glUseProgram(0);
 	
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
@@ -284,6 +305,17 @@ void drawScene(GLuint currentShaderProgram,
 		inverse(transpose(viewMatrix * fighterModelMatrix)));
 
 	labhelper::render(fighterModel);
+
+	// Draw test chunk
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
+		projectionMatrix * viewMatrix * testChunkModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * testChunkModelMatrix);
+	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
+		inverse(transpose(viewMatrix * testChunkModelMatrix)));
+	
+	glBindVertexArray(chunkVAOs[0]);
+	glDrawArrays(GL_TRIANGLES, 0, 6 * 63 * 63); // todo: save count somewhere
+	glBindVertexArray(0);
 }
 
 
