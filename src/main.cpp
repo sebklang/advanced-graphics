@@ -21,6 +21,7 @@ using namespace glm;
 #include <Model.h>
 #include "hdr.h"
 #include "fbo.h"
+#include "ParticleSystem.h"
 
 
 
@@ -37,6 +38,8 @@ float previousTime = 0.0f;
 float deltaTime = 0.0f;
 bool showUI = false;
 int windowWidth, windowHeight;
+GLuint particleShaderProgram;
+ParticleSystem particle_system(100000);
 
 // Mouse input
 ivec2 g_prevMouseCoords = { -1, -1 };
@@ -111,6 +114,13 @@ void loadShaders(bool is_reload)
 	{
 		shaderProgram = shader;
 	}
+
+	shader = labhelper::loadShaderProgram("../src/particle.vert", "../src/particle.frag", is_reload);
+	if (shader != 0)
+	{
+		particleShaderProgram = shader;
+	}
+
 }
 
 
@@ -149,7 +159,7 @@ void initialize()
 	irradianceMap = labhelper::loadHdrTexture("../scenes/envmaps/" + envmap_base_name + "_irradiance.hdr");
 	reflectionMap = labhelper::loadHdrMipmapTexture(filenames);
 
-
+	particle_system.init_gpu_data(); //initiate... the particle system 
 
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
 	glEnable(GL_CULL_FACE);  // enables backface culling
@@ -226,6 +236,32 @@ void drawScene(GLuint currentShaderProgram,
 	labhelper::render(fighterModel);
 }
 
+//to be included in display 
+void drawParticles(const mat4& viewMatrix, const mat4& projMatrix)
+{
+	// Spawn 64 sand particles per frame falling from above
+	for (int i = 0; i < 64; ++i)
+	{
+		float x = labhelper::uniform_randf(-10.f, 10.f);
+		float z = labhelper::uniform_randf(-10.f, 10.f);
+
+		Particle p;
+		p.pos = glm::vec3(x, 30.f, z);
+		p.velocity = glm::vec3(0.f, -2.f, 0.f);
+		p.lifetime = 0.f;
+		p.life_length = 15.f;
+		particle_system.spawn(p);
+	}
+
+	particle_system.process_particles(deltaTime);
+
+	glUseProgram(particleShaderProgram);
+	labhelper::setUniformSlow(particleShaderProgram, "screen_x", float(windowWidth));
+	labhelper::setUniformSlow(particleShaderProgram, "screen_y", float(windowHeight));
+	labhelper::setUniformSlow(particleShaderProgram, "projectionMatrix", projMatrix);
+
+	particle_system.submit_to_gpu(viewMatrix);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 /// This function will be called once per frame, so the code to set up
@@ -283,7 +319,7 @@ void display(void)
 	drawScene(shaderProgram, viewMatrix, projMatrix, lightViewMatrix, lightProjMatrix);
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
 
-
+	drawParticles(viewMatrix, projMatrix);
 
 }
 
