@@ -19,7 +19,7 @@ void main()
 	float y     =  cos(xfreq * x) * cos(zfreq * z);
 	float dydx  = -xfreq * sin(xfreq * x) * cos(zfreq * z);
 	float dydz  = -zfreq * sin(zfreq * z) * cos(xfreq * x);
-
+	
 	position  = vec3(x, y, z);
 	normal    = normalize(vec3(-dydx, 1.0, -dydz));
 	texCoord  = v; // todo

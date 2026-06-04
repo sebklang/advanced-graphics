@@ -24,6 +24,7 @@ using namespace glm;
 #include "hdr.h"
 #include "fbo.h"
 
+#include "ParticleSystem.h"
 
 
 
@@ -37,7 +38,7 @@ SDL_Window* g_window = nullptr;
 float currentTime = 0.0f;
 float previousTime = 0.0f;
 float deltaTime = 0.0f;
-bool showUI = false;
+bool showUI = true;
 int windowWidth, windowHeight;
 
 // Mouse input
@@ -52,7 +53,7 @@ GLuint simpleShaderProgram; // Shader used to draw the shadow map
 GLuint backgroundProgram;
 GLuint terrainGenProgram;
 GLuint chunkProgram;
-
+GLuint particleShaderProgram;
 ///////////////////////////////////////////////////////////////////////////////
 // Environment
 ///////////////////////////////////////////////////////////////////////////////
@@ -68,8 +69,18 @@ vec3 point_light_color = vec3(1.f, 1.f, 1.f);
 
 float point_light_intensity_multiplier = 10000.0f;
 
+constexpr float chunkXMultiplier = 256.0f;
+constexpr float chunkYMultiplier = 32.0f;
+constexpr float chunkZMultiplier = 256.0f;
 
+glm::mat4 roomModelMatrix;
+glm::vec3 scaleVec = vec3(chunkXMultiplier, chunkYMultiplier, chunkZMultiplier);
+glm::mat4 chunkModelMatrix = glm::scale(glm::mat4(1.0f), scaleVec);
 
+///////////////////////////////////////////////////////////////////////////////
+// Particles 
+///////////////////////////////////////////////////////////////////////////////
+ParticleSystem particle_system(2000000, chunkModelMatrix);
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -84,13 +95,6 @@ vec3 worldUp(0.0f, 1.0f, 0.0f);
 ///////////////////////////////////////////////////////////////////////////////
 // Models
 ///////////////////////////////////////////////////////////////////////////////
-labhelper::Model* fighterModel = nullptr;
-labhelper::Model* landingpadModel = nullptr;
-
-mat4 roomModelMatrix;
-mat4 landingPadModelMatrix;
-mat4 fighterModelMatrix;
-mat4 chunkModelMatrix;
 
 float shipSpeed = 50;
 
@@ -169,6 +173,12 @@ void loadShaders(bool is_reload)
 	{
 		chunkProgram = shader;
 	}
+
+	shader = labhelper::loadShaderProgram("../src/particle.vert", "../src/particle.frag", is_reload);
+	if (shader != 0)
+	{
+		particleShaderProgram = shader;
+	}
 	else abort();
 
 	GLuint terrainGenShader = glCreateShader(GL_VERTEX_SHADER);
@@ -201,16 +211,17 @@ void initialize()
 	///////////////////////////////////////////////////////////////////////
 	loadShaders(false);
 
+	particle_system.init_gpu_data();
+
 	///////////////////////////////////////////////////////////////////////
 	// Load models and set up model matrices
 	///////////////////////////////////////////////////////////////////////
-	fighterModel = labhelper::loadModelFromOBJ("../scenes/space-ship.obj");
-	landingpadModel = labhelper::loadModelFromOBJ("../scenes/landingpad.obj");
-
+	//fighterModel = labhelper::loadModelFromOBJ("../scenes/space-ship.obj");
+	//landingpadModel = labhelper::loadModelFromOBJ("../scenes/landingpad.obj");
+	
 	roomModelMatrix = mat4(1.0f);
-	fighterModelMatrix = translate(15.0f * worldUp);
-	landingPadModelMatrix = mat4(1.0f);
-	chunkModelMatrix =  scale(translate(30.0f * worldUp), vec3(256.0f, 20.0f, 256.0f));
+	//fighterModelMatrix = translate(15.0f * worldUp);
+	//landingPadModelMatrix = mat4(1.0f);
 
 	///////////////////////////////////////////////////////////////////////
 	// Load environment map
@@ -312,24 +323,6 @@ void drawScene(GLuint currentShaderProgram,
 	// camera
 	labhelper::setUniformSlow(currentShaderProgram, "viewInverse", inverse(viewMatrix));
 
-	// landing pad
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
-		projectionMatrix * viewMatrix * landingPadModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * landingPadModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
-		inverse(transpose(viewMatrix * landingPadModelMatrix)));
-
-	labhelper::render(landingpadModel);
-
-	// Fighter
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewProjectionMatrix",
-		projectionMatrix * viewMatrix * fighterModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "modelViewMatrix", viewMatrix * fighterModelMatrix);
-	labhelper::setUniformSlow(currentShaderProgram, "normalMatrix",
-		inverse(transpose(viewMatrix * fighterModelMatrix)));
-
-	labhelper::render(fighterModel);
-
 	// Display chunks
 	glUseProgram(chunkProgram);
 	labhelper::setUniformSlow(chunkProgram, "modelViewProjectionMatrix",
@@ -345,7 +338,6 @@ void drawScene(GLuint currentShaderProgram,
 	}
 	glUseProgram(currentShaderProgram);
 }
-
 
 ///////////////////////////////////////////////////////////////////////////////
 /// This function will be called once per frame, so the code to set up
@@ -403,8 +395,8 @@ void display(void)
 	drawScene(shaderProgram, viewMatrix, projMatrix, lightViewMatrix, lightProjMatrix);
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
 
-
-
+	particle_system.process_particles(deltaTime);
+	particle_system.draw_particles(viewMatrix, projMatrix, particleShaderProgram);
 }
 
 
@@ -516,10 +508,19 @@ bool handleEvents(void)
 ///////////////////////////////////////////////////////////////////////////////
 void gui()
 {
-	// ----------------- Set variables --------------------------
-	ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
-		ImGui::GetIO().Framerate);
-	// ----------------------------------------------------------
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
+    ImGui::Begin("Stats", nullptr,
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoMove);
+
+	ImGui::Text("Sand particles: %d", particle_system.particle_count());
+    ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
+
+    ImGui::End();
+
+    // Keep the original FPS line in the main imgui window if showUI is on
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
+        ImGui::GetIO().Framerate);
 }
 
 int main(int argc, char* argv[])
@@ -561,8 +562,8 @@ int main(int argc, char* argv[])
 		SDL_GL_SwapWindow(g_window);
 	}
 	// Free Models
-	labhelper::freeModel(fighterModel);
-	labhelper::freeModel(landingpadModel);
+	//labhelper::freeModel(fighterModel);
+	//labhelper::freeModel(landingpadModel);
 
 	// Shut down everything. This includes the window and all other subsystems.
 	labhelper::shutDown(g_window);
