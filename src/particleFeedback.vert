@@ -1,4 +1,7 @@
+#version 420
+
 #define MAX_ROCK_FACES 64
+#define MAX_ROCKS 16
 
 layout(location = 0) in vec4 pos;
 layout(location = 1) in vec4 vel;
@@ -7,6 +10,9 @@ uniform float deltaTime;
 
 uniform int numRockFaces;
 uniform vec4 rockPlanes[MAX_ROCK_FACES];
+uniform int rockCount;
+uniform int rockPlaneOffsets[MAX_ROCKS];
+uniform int rockPlaneCounts[MAX_ROCKS];
 // xyz = normal, w = d
 
 out vec4 outPosition;
@@ -18,6 +24,47 @@ float rand(vec2 co) {
 
 float signedDistanceToPlane(vec3 p, vec4 plane) {
     return dot(p, plane.xyz) - plane.w;
+}
+
+void collideConvexRock(inout vec3 p, inout vec3 v, int rockIndex) {
+    int offset = rockPlaneOffsets[rockIndex];
+    int count = rockPlaneCounts[rockIndex];
+
+    float maxDistance = -1e20;
+    vec3 closestNormal = vec3(0.0, 1.0, 0.0);
+
+    for (int face = 0; face < count; ++face) {
+        int planeIndex = offset + face;
+        if (planeIndex >= numRockFaces) {
+            break;
+        }
+
+        vec4 plane = rockPlanes[planeIndex];
+        float distance = signedDistanceToPlane(p, plane);
+        if (distance > maxDistance) {
+            maxDistance = distance;
+            closestNormal = normalize(plane.xyz);
+        }
+    }
+
+    float influenceDistance = 8.0;
+    if (maxDistance > influenceDistance) {
+        return;
+    }
+
+    if (maxDistance < 0.0) {
+        p -= closestNormal * maxDistance;
+
+        float normalVelocity = dot(v, closestNormal);
+        if (normalVelocity < 0.0) {
+            vec3 vNormal = normalVelocity * closestNormal;
+            vec3 vTangent = v - vNormal;
+            v = vTangent * 0.65 - vNormal * 0.1;
+        }
+    } else {
+        float influence = 1.0 - smoothstep(0.0, influenceDistance, maxDistance);
+        v += closestNormal * influence * 10.0 * deltaTime;
+    }
 }
 
 float terrainHeight(float x, float z)
@@ -66,11 +113,8 @@ void main()
         return;
     }
 
-    for (int i = 0; i < numRockFaces; i++) {
-        float dist = signedDistanceToPlane(pos.xyz, rockPlanes[i]);
-        float influence = smoothstep(0.35, 0.03, dist);
-        vec3 force = rockPlanes[i].xyz * influence * 2.0;
-        v += force * deltaTime;
+    for (int i = 0; i < rockCount; i++) {
+        collideConvexRock(p, v, i);
     }
 
     outPosition = vec4(p, 1.0);

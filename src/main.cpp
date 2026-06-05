@@ -450,8 +450,7 @@ void display(void)
 	}
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
 	*/
-
-
+	particle_system.renderRocks(shaderProgram, chunkModelMatrix, viewMatrix, projMatrix);
 	particle_system.process_particles(deltaTime);
 	particle_system.draw_particles(viewMatrix, projMatrix, particleShaderProgram);
 }

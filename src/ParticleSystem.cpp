@@ -14,6 +14,7 @@
 
 ParticleSystem::ParticleSystem(int capacity, glm::mat4 modelMatrix)
     : max_size(capacity)
+    , obstacleModelMatrix(modelMatrix)
     , activeIndex(0)
 {
     for (int i = 0; i < max_size; i++) {
@@ -152,30 +153,6 @@ void ParticleSystem::set_obstacles(const std::vector<Rock>& rocks) {
     labhelper::setUniformSlow(particleFeedbackProgram, "rockCount", (int)rocks.size());
     glUseProgram(0);
 }
-
-struct Face {
-    glm::vec3 point;
-    glm::vec3 normal;
-    float d; // dot(point, normal)
-};
-
-struct Obstacle {
-    glm::vec3 center;
-    float radius;
-    std::vector<Face> faces;
-};
-
-struct ObstacleVertex {
-	glm::vec3 position;
-	glm::vec3 normal;
-	glm::vec2 texCoord;
-};
-
-struct ObstacleGpu {
-	GLuint vao = 0;
-	GLuint vbo = 0;
-	GLsizei vertexCount = 0;
-};
 
 static bool intersectThreePlanes(
 	const Face& a,
@@ -448,6 +425,15 @@ void renderObstacle(
 	glBindVertexArray(0);
 }
 
+void ParticleSystem::renderRocks(GLuint shaderProgram,
+	const glm::mat4& modelMatrix,
+	const glm::mat4& viewMatrix,
+	const glm::mat4& projectionMatrix) {
+	for (const auto& gpu : obstacleGpus) {
+		renderObstacle(gpu, shaderProgram, modelMatrix, viewMatrix, projectionMatrix);
+	}
+}
+
 Face makeFace(glm::vec3 center, glm::vec3 normal, float distanceFromCenter) {
     normal = glm::normalize(normal);
 
@@ -501,7 +487,7 @@ Obstacle generateRock(std::mt19937& rng, glm::vec3 center, float radius, int ext
     return rock;
 }
 
-std::vector<Obstacle> generateSceneRocks() {
+std::vector<Obstacle> ParticleSystem::generateSceneRocks() {
     std::mt19937 rng(1337);
     std::vector<Obstacle> rocks;
     // Stora stenar i scenkoordinater 0..4
@@ -510,27 +496,46 @@ std::vector<Obstacle> generateSceneRocks() {
     rocks.push_back(generateRock(rng, glm::vec3(3.3f, 0.20f, 3.1f), 0.40f, 3));
     for (const auto& rock : rocks) {
         ObstacleGpu obstacleGpu = uploadObstacleToGpu(rock);
-
+		obstacleGpus.push_back(obstacleGpu);
     }
     return rocks;
 }
 
 void ParticleSystem::set_obstacles2() {
+    constexpr int maxRockFaces = 64;
+    constexpr int maxRocks = 16;
+
     glUseProgram(particleFeedbackProgram);
     auto rocks = generateSceneRocks();
-    for (const auto& rock : rocks) {
-        for (const auto& face : rock.faces) {
-            glm::vec3 position = face.point;
-            glm::vec3 normal = face.normal;
-
-        }
-    }
 
     std::vector<glm::vec4> planes;
+    std::vector<GLint> rockPlaneOffsets;
+    std::vector<GLint> rockPlaneCounts;
+
+    const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(obstacleModelMatrix)));
 
     for (const Obstacle& rock : rocks) {
+        if ((int)rockPlaneOffsets.size() >= maxRocks) {
+            break;
+        }
+
+        const GLint start = (GLint)planes.size();
         for (const Face& face : rock.faces) {
-            planes.push_back(glm::vec4(face.normal, face.d));
+            if ((int)planes.size() >= maxRockFaces) {
+                break;
+            }
+
+            const glm::vec3 worldPoint = glm::vec3(obstacleModelMatrix * glm::vec4(face.point, 1.0f));
+            const glm::vec3 worldNormal = glm::normalize(normalMatrix * face.normal);
+            const float worldD = glm::dot(worldPoint, worldNormal);
+
+            planes.push_back(glm::vec4(worldNormal, worldD));
+        }
+
+        const GLint count = (GLint)planes.size() - start;
+        if (count > 0) {
+            rockPlaneOffsets.push_back(start);
+            rockPlaneCounts.push_back(count);
         }
     }
 
@@ -539,13 +544,32 @@ void ParticleSystem::set_obstacles2() {
         (int)planes.size()
     );
 
-    glUniform4fv(
-        glGetUniformLocation(particleFeedbackProgram, "rockPlanes"),
-        (GLsizei)planes.size(),
-        glm::value_ptr(planes[0])
+    glUniform1i(
+        glGetUniformLocation(particleFeedbackProgram, "rockCount"),
+        (int)rockPlaneOffsets.size()
     );
+
+    if (!planes.empty()) {
+        glUniform4fv(
+            glGetUniformLocation(particleFeedbackProgram, "rockPlanes"),
+            (GLsizei)planes.size(),
+            glm::value_ptr(planes[0])
+        );
+    }
+
+    if (!rockPlaneOffsets.empty()) {
+        glUniform1iv(
+            glGetUniformLocation(particleFeedbackProgram, "rockPlaneOffsets"),
+            (GLsizei)rockPlaneOffsets.size(),
+            rockPlaneOffsets.data()
+        );
+
+        glUniform1iv(
+            glGetUniformLocation(particleFeedbackProgram, "rockPlaneCounts"),
+            (GLsizei)rockPlaneCounts.size(),
+            rockPlaneCounts.data()
+        );
+    }
 
     glUseProgram(0);
 }
-
-void ParticleSystem::
