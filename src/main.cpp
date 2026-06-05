@@ -273,7 +273,6 @@ void initialize()
 		}
 	}
 
-	/*
 	//generate rocks 
 	srand(42); // fixed seed for consistent placement
 	for (int i = 0; i < 20; i++) {
@@ -289,10 +288,7 @@ void initialize()
 		r.rotation = (rand() / (float)RAND_MAX) * 6.28318f;
 		rocks.push_back(r);
 	}
-	//particle_system.set_obstacles(rocks);
-	*/
-	
-	particle_system.set_obstacles2();
+	particle_system.set_obstacles(rocks);
 	
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
 	glEnable(GL_CULL_FACE);  // enables backface culling
@@ -434,7 +430,6 @@ void display(void)
 	labhelper::setUniformSlow(shaderProgram, "point_light_intensity_multiplier",
 		point_light_intensity_multiplier);
 
-	/*
 	for (auto& rock : rocks) {
 		glm::mat4 model = glm::translate(glm::mat4(1.0f), rock.pos);
 		model = glm::rotate(model, rock.rotation, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -449,8 +444,7 @@ void display(void)
 		labhelper::render(rockModel);
 	}
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
-	*/
-	particle_system.renderRocks(shaderProgram, chunkModelMatrix, viewMatrix, projMatrix);
+
 	particle_system.process_particles(deltaTime);
 	particle_system.draw_particles(viewMatrix, projMatrix, particleShaderProgram);
 }

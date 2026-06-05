@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - -I../external/glew/include
+    - -I../external/glm/include
+    - -I../external/sdl2/include
+    - -I../external_src/imgui-1.51
+    - -I../labhelper
+    - -DGLM_ENABLE_EXPERIMENTAL

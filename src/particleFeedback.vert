@@ -1,19 +1,14 @@
 #version 420
-
-#define MAX_ROCK_FACES 64
-#define MAX_ROCKS 16
+#extension GL_ARB_enhanced_layouts : enable
 
 layout(location = 0) in vec4 pos;
 layout(location = 1) in vec4 vel;
 
 uniform float deltaTime;
 
-uniform int numRockFaces;
-uniform vec4 rockPlanes[MAX_ROCK_FACES];
+uniform vec3 rockPositions[32];
+uniform float rockRadii[32];
 uniform int rockCount;
-uniform int rockPlaneOffsets[MAX_ROCKS];
-uniform int rockPlaneCounts[MAX_ROCKS];
-// xyz = normal, w = d
 
 out vec4 outPosition;
 out vec4 outVelocity;
@@ -22,50 +17,6 @@ float rand(vec2 co) {
     return fract(sin(dot(co, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-float signedDistanceToPlane(vec3 p, vec4 plane) {
-    return dot(p, plane.xyz) - plane.w;
-}
-
-void collideConvexRock(inout vec3 p, inout vec3 v, int rockIndex) {
-    int offset = rockPlaneOffsets[rockIndex];
-    int count = rockPlaneCounts[rockIndex];
-
-    float maxDistance = -1e20;
-    vec3 closestNormal = vec3(0.0, 1.0, 0.0);
-
-    for (int face = 0; face < count; ++face) {
-        int planeIndex = offset + face;
-        if (planeIndex >= numRockFaces) {
-            break;
-        }
-
-        vec4 plane = rockPlanes[planeIndex];
-        float distance = signedDistanceToPlane(p, plane);
-        if (distance > maxDistance) {
-            maxDistance = distance;
-            closestNormal = normalize(plane.xyz);
-        }
-    }
-
-    float influenceDistance = 8.0;
-    if (maxDistance > influenceDistance) {
-        return;
-    }
-
-    if (maxDistance < 0.0) {
-        p -= closestNormal * maxDistance;
-
-        float normalVelocity = dot(v, closestNormal);
-        if (normalVelocity < 0.0) {
-            vec3 vNormal = normalVelocity * closestNormal;
-            vec3 vTangent = v - vNormal;
-            v = vTangent * 0.65 - vNormal * 0.1;
-        }
-    } else {
-        float influence = 1.0 - smoothstep(0.0, influenceDistance, maxDistance);
-        v += closestNormal * influence * 10.0 * deltaTime;
-    }
-}
 
 float terrainHeight(float x, float z)
 {
@@ -75,9 +26,35 @@ float terrainHeight(float x, float z)
     return 32.0 * cos(xfreq * x / 256.0) * cos(zfreq * z / 256.0);
 }
 
+void collideRock (inout vec3 p, inout vec3 v, vec4 sphere) {
+    vec3 c = sphere.xyz;
+    float r = sphere.w;
+
+    vec3 q = p - c;
+    float dist = length(q);
+
+    if (dist < r && dist > 0.0001) {
+        vec3 n = q / dist;
+
+        p = c + n * r;
+
+        float vn = dot(v, n);
+
+        if (vn < 0.0) {
+            float restitution = 0.1;
+            float friction = 0.65;
+
+            vec3 vN = vn * n;
+            vec3 vT = v - vN;
+
+            v = -restitution * vN + friction * vT;
+        }
+    }
+}
+
 void main()
 {
-    vec3 p = pos.xyz; 
+	vec3 p = pos.xyz; 
     vec3 v = vel.xyz; 
 
     float x = pos[0];
@@ -113,8 +90,11 @@ void main()
         return;
     }
 
-    for (int i = 0; i < rockCount; i++) {
-        collideConvexRock(p, v, i);
+	//float dydx  = -xfreq * sin(xfreq * x) * cos(zfreq * z);
+	//float dydz  = -zfreq * sin(zfreq * z) * cos(xfreq * x);
+    
+    for (int i = 0; i < rockCount; ++i) {
+        collideRock(p, v, vec4(rockPositions[i], rockRadii[i]));
     }
 
     outPosition = vec4(p, 1.0);
