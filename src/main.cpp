@@ -25,7 +25,8 @@ using namespace glm;
 #include "fbo.h"
 
 #include "ParticleSystem.h"
-
+#include "Terrain.h"
+#include "Rock.h"
 
 
 using std::min;
@@ -95,6 +96,8 @@ vec3 worldUp(0.0f, 1.0f, 0.0f);
 ///////////////////////////////////////////////////////////////////////////////
 // Models
 ///////////////////////////////////////////////////////////////////////////////
+labhelper::Model* rockModel = nullptr;
+std::vector<Rock> rocks;
 
 float shipSpeed = 50;
 
@@ -218,7 +221,7 @@ void initialize()
 	///////////////////////////////////////////////////////////////////////
 	//fighterModel = labhelper::loadModelFromOBJ("../scenes/space-ship.obj");
 	//landingpadModel = labhelper::loadModelFromOBJ("../scenes/landingpad.obj");
-	
+	rockModel = labhelper::loadModelFromOBJ("../scenes/stone.obj");
 	roomModelMatrix = mat4(1.0f);
 	//fighterModelMatrix = translate(15.0f * worldUp);
 	//landingPadModelMatrix = mat4(1.0f);
@@ -270,6 +273,27 @@ void initialize()
 		}
 	}
 
+	/*
+	//generate rocks 
+	srand(42); // fixed seed for consistent placement
+	for (int i = 0; i < 20; i++) {
+		Rock r;
+		float lx = (rand() / (float)RAND_MAX) * 4.0f;
+		float lz = (rand() / (float)RAND_MAX) * 4.0f;
+		float wx = lx * 256.0f;
+		float wz = lz * 256.0f;
+		float wy = terrainHeight(lx, lz) * 32.0f;
+
+		r.pos      = glm::vec3(wx, wy, wz);
+		r.scale    = 3.0f + (rand() / (float)RAND_MAX) * 5.0f;
+		r.rotation = (rand() / (float)RAND_MAX) * 6.28318f;
+		rocks.push_back(r);
+	}
+	//particle_system.set_obstacles(rocks);
+	*/
+	
+	particle_system.set_obstacles2();
+	
 	glEnable(GL_DEPTH_TEST); // enable Z-buffering
 	glEnable(GL_CULL_FACE);  // enables backface culling
 }
@@ -393,7 +417,40 @@ void display(void)
 
 	drawBackground(viewMatrix, projMatrix);
 	drawScene(shaderProgram, viewMatrix, projMatrix, lightViewMatrix, lightProjMatrix);
+
+	///////////////////////////////////////////////////////////////////////////
+	//rocks
+	////////////////////////////////////////////////////////////////////////////
+	glUseProgram(shaderProgram);
+
+	// Lighting uniforms shading.frag needs
+	vec4 viewSpaceLightPos = viewMatrix * vec4(lightPosition, 1.0f);
+	labhelper::setUniformSlow(shaderProgram, "viewSpaceLightPosition", vec3(viewSpaceLightPos));
+	labhelper::setUniformSlow(shaderProgram, "viewSpaceLightDir",
+		normalize(vec3(viewMatrix * vec4(-lightPosition, 0.0f))));
+	labhelper::setUniformSlow(shaderProgram, "viewInverse", inverse(viewMatrix));
+	labhelper::setUniformSlow(shaderProgram, "environment_multiplier", environment_multiplier);
+	labhelper::setUniformSlow(shaderProgram, "point_light_color", point_light_color);
+	labhelper::setUniformSlow(shaderProgram, "point_light_intensity_multiplier",
+		point_light_intensity_multiplier);
+
+	/*
+	for (auto& rock : rocks) {
+		glm::mat4 model = glm::translate(glm::mat4(1.0f), rock.pos);
+		model = glm::rotate(model, rock.rotation, glm::vec3(0.0f, 1.0f, 0.0f));
+		model = glm::scale(model, glm::vec3(rock.scale));
+
+		labhelper::setUniformSlow(shaderProgram, "modelViewProjectionMatrix",
+			projMatrix * viewMatrix * model);
+		labhelper::setUniformSlow(shaderProgram, "modelViewMatrix", viewMatrix * model);
+		labhelper::setUniformSlow(shaderProgram, "normalMatrix",
+			glm::inverse(glm::transpose(viewMatrix * model)));
+
+		labhelper::render(rockModel);
+	}
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
+	*/
+
 
 	particle_system.process_particles(deltaTime);
 	particle_system.draw_particles(viewMatrix, projMatrix, particleShaderProgram);

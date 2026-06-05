@@ -1,13 +1,20 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>  // for std::sort
+#include <random>
+#include <glm/gtc/type_ptr.hpp>
 #include "ParticleSystem.h"
 #include "Terrain.h"
 #include "labhelper.h"
+#include <vector>
+#include <cmath>
+#include <cstddef>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/norm.hpp>
 
 ParticleSystem::ParticleSystem(int capacity, glm::mat4 modelMatrix)
     : max_size(capacity)
-    , activeVBOindex(0)
+    , activeIndex(0)
 {
     for (int i = 0; i < max_size; i++) {
         float xfreq = 2 * 1.7;
@@ -16,19 +23,12 @@ ParticleSystem::ParticleSystem(int capacity, glm::mat4 modelMatrix)
         float lz = (rand() / (float)RAND_MAX) * 4.0f;
         float ly = cos(xfreq * lx) * cos(zfreq * lz);
         Particle p;
-        p.pos       = modelMatrix * glm::vec4(lx, ly, lz, 1.0f)
-                        + glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
-        //p.velocity  = glm::vec3(0.0f);
-        //p.lifetime  = 0.0f;
-        //p.life_length = 1e9f;
-        spawn(p);
+        p.pos  = modelMatrix * glm::vec4(lx, ly, lz, 1.0f)
+               + glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+        p.vel  = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        particles.push_back(p);
     }
-    //std::sort(particles.begin(),
-    //    std::next(particles.begin(), max_size),
-    //        [](Particle& a, const Particle& b) { return a.z < b.z; });
-
 }
-
 
 ParticleSystem::~ParticleSystem() {}
 
@@ -56,8 +56,8 @@ void ParticleSystem::init_gpu_data()
 
 	particleFeedbackProgram = glCreateProgram();
 	glAttachShader(particleFeedbackProgram, particleFeedbackShader);
-    const char* varyings[] = { "position" };
-	glTransformFeedbackVaryings(particleFeedbackProgram, 1, varyings, GL_SEPARATE_ATTRIBS);
+    const char* varyings[] = { "outPosition", "outVelocity" };
+	glTransformFeedbackVaryings(particleFeedbackProgram, 2, varyings, GL_INTERLEAVED_ATTRIBS);
     glLinkProgram(particleFeedbackProgram);
 
     glGetProgramiv(particleFeedbackProgram, GL_LINK_STATUS, &success);
@@ -74,62 +74,37 @@ void ParticleSystem::init_gpu_data()
 
 	glDeleteShader(particleFeedbackShader);
 
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
+    glGenVertexArrays(2, vaos);
     glGenBuffers(2, vbos);
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbos[1]);
-    glBufferData(GL_ARRAY_BUFFER, max_size * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
-    glEnableVertexAttribArray(0);
+    auto data = particles.data();
+    for (int i = 0; i < 2; i++) { // Always 2. Iterating over ping-pong buffers
+        glBindVertexArray(vaos[i]);
+        glBindBuffer(GL_ARRAY_BUFFER, vbos[i]);
+        glBufferData(GL_ARRAY_BUFFER, max_size * sizeof(Particle), data, GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(
+            0, 4, GL_FLOAT, GL_FALSE,
+            sizeof(Particle),
+            (void*) offsetof(Particle, pos)
+        );
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(
+            1, 4, GL_FLOAT, GL_FALSE,
+            sizeof(Particle),
+            (void*) offsetof(Particle, vel)
+        );
+        glEnableVertexAttribArray(1);
+        data = nullptr;
+    }
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
-    glBufferData(GL_ARRAY_BUFFER, max_size * sizeof(glm::vec4), particles.data(), GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
-
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, vbos[1]);
     glBindVertexArray(0);
-}
-
-void ParticleSystem::spawn(Particle p)
-{
-    if (particles.size() < max_size)
-        particles.push_back(p);
-}
-
-void ParticleSystem::kill(int id)
-{
-    particles[id] = particles.back();
-    particles.pop_back();
 }
 
 void ParticleSystem::process_particles(float dt)
 {
-    /*
-    const glm::vec3 wind = glm::vec3(2.0f, 0.0f, 0.5f);
-    for (auto& p : particles) {
-        p.velocity += wind * dt;
-		p.velocity *= 0.98f;  // drag to prevent runaway acceleration
-		p.pos += p.velocity * dt;
-        p.lifetime += dt;
-
-		float groundY = terrainHeight(p.pos.x, p.pos.z);
-		if (p.pos.y < groundY) {
-			p.pos.y = groundY;
-			p.velocity.y = 0.0f;  // settle on surface
-		}
-    }
-    for (int i = 0; i < particles.size(); ++i) {
-        if (particles[i].lifetime > particles[i].life_length)
-            kill(i--);
-    }
-    */
     glUseProgram(particleFeedbackProgram); // todo
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbos[activeVBOindex]);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
-    //glEnableVertexAttribArray(0);
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, vbos[1 - activeVBOindex]);
+    glBindVertexArray(vaos[activeIndex]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, vbos[1 - activeIndex]);
     labhelper::setUniformSlow(particleFeedbackProgram, "deltaTime", dt);
 	glEnable(GL_RASTERIZER_DISCARD);
 	glBeginTransformFeedback(GL_POINTS);
@@ -137,17 +112,14 @@ void ParticleSystem::process_particles(float dt)
 	glEndTransformFeedback();
 	glDisable(GL_RASTERIZER_DISCARD);
 	glUseProgram(0);
-	activeVBOindex = 1 - activeVBOindex;
+	activeIndex = 1 - activeIndex;
 }
 
 
 void ParticleSystem::draw_particles(const glm::mat4& viewMat, const glm::mat4& projMat, GLuint shaderProgram)
 {
     glUseProgram(shaderProgram);
-    
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbos[activeVBOindex]);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glBindVertexArray(vaos[activeIndex]);
 
     // Upload projection matrix and screen size uniforms required by particle.vert
     glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "P"), 1, GL_FALSE, &(projMat * viewMat)[0][0]);
@@ -168,3 +140,412 @@ void ParticleSystem::draw_particles(const glm::mat4& viewMat, const glm::mat4& p
 
     glUseProgram(0);
 }
+
+void ParticleSystem::set_obstacles(const std::vector<Rock>& rocks) {
+    glUseProgram(particleFeedbackProgram);
+    for (int i = 0; i < (int)rocks.size() && i < 32; i++) {
+        std::string posName = "rockPositions[" + std::to_string(i) + "]";
+        std::string radName = "rockRadii[" + std::to_string(i) + "]";
+        labhelper::setUniformSlow(particleFeedbackProgram, posName.c_str(), rocks[i].pos);
+        labhelper::setUniformSlow(particleFeedbackProgram,radName.c_str(), rocks[i].scale * 1.15f);
+    }
+    labhelper::setUniformSlow(particleFeedbackProgram, "rockCount", (int)rocks.size());
+    glUseProgram(0);
+}
+
+struct Face {
+    glm::vec3 point;
+    glm::vec3 normal;
+    float d; // dot(point, normal)
+};
+
+struct Obstacle {
+    glm::vec3 center;
+    float radius;
+    std::vector<Face> faces;
+};
+
+struct ObstacleVertex {
+	glm::vec3 position;
+	glm::vec3 normal;
+	glm::vec2 texCoord;
+};
+
+struct ObstacleGpu {
+	GLuint vao = 0;
+	GLuint vbo = 0;
+	GLsizei vertexCount = 0;
+};
+
+static bool intersectThreePlanes(
+	const Face& a,
+	const Face& b,
+	const Face& c,
+	glm::vec3& out
+) {
+	const glm::vec3 n1 = a.normal;
+	const glm::vec3 n2 = b.normal;
+	const glm::vec3 n3 = c.normal;
+
+	const float denom = glm::dot(n1, glm::cross(n2, n3));
+
+	if(std::abs(denom) < 1e-5f)
+		return false;
+
+	out =
+		(a.d * glm::cross(n2, n3) +
+		 b.d * glm::cross(n3, n1) +
+		 c.d * glm::cross(n1, n2)) / denom;
+
+	return true;
+}
+
+ObstacleGpu uploadObstacleToGpu(const Obstacle& obstacle)
+{
+	std::vector<ObstacleVertex> vertices;
+
+	const float eps = 1e-4f;
+
+	for(size_t faceIndex = 0; faceIndex < obstacle.faces.size(); ++faceIndex)
+	{
+		const Face& face = obstacle.faces[faceIndex];
+		glm::vec3 n = glm::normalize(face.normal);
+
+		std::vector<glm::vec3> polygon;
+
+		// Hitta alla vertices på detta face genom att skära
+		// detta plan med två andra plan.
+		for(size_t j = 0; j < obstacle.faces.size(); ++j)
+		{
+			if(j == faceIndex)
+				continue;
+
+			for(size_t k = j + 1; k < obstacle.faces.size(); ++k)
+			{
+				if(k == faceIndex)
+					continue;
+
+				glm::vec3 p;
+				if(!intersectThreePlanes(face, obstacle.faces[j], obstacle.faces[k], p))
+					continue;
+
+				// Safety bound så vi inte får enorma numeriska skräppunkter.
+				if(glm::length2(p - obstacle.center) > obstacle.radius * obstacle.radius * 4.0f)
+					continue;
+
+				// Antagande: normalerna pekar utåt.
+				// Då ligger insidan av hindret där dot(p, normal) <= d.
+				bool insideAllPlanes = true;
+				for(const Face& f : obstacle.faces)
+				{
+					if(glm::dot(p, f.normal) > f.d + eps)
+					{
+						insideAllPlanes = false;
+						break;
+					}
+				}
+
+				if(!insideAllPlanes)
+					continue;
+
+				// Undvik dubletter.
+				bool duplicate = false;
+				for(const glm::vec3& existing : polygon)
+				{
+					if(glm::length2(existing - p) < 1e-6f)
+					{
+						duplicate = true;
+						break;
+					}
+				}
+
+				if(!duplicate)
+					polygon.push_back(p);
+			}
+		}
+
+		if(polygon.size() < 3)
+			continue;
+
+		// Sortera hörnen runt face-normalen.
+		glm::vec3 polygonCenter(0.0f);
+		for(const glm::vec3& p : polygon)
+			polygonCenter += p;
+		polygonCenter /= static_cast<float>(polygon.size());
+
+		glm::vec3 tangent = glm::normalize(polygon[0] - polygonCenter);
+		glm::vec3 bitangent = glm::normalize(glm::cross(n, tangent));
+
+		std::sort(
+			polygon.begin(),
+			polygon.end(),
+			[&](const glm::vec3& a, const glm::vec3& b)
+			{
+				glm::vec3 da = a - polygonCenter;
+				glm::vec3 db = b - polygonCenter;
+
+				float angleA = std::atan2(
+					glm::dot(da, bitangent),
+					glm::dot(da, tangent)
+				);
+
+				float angleB = std::atan2(
+					glm::dot(db, bitangent),
+					glm::dot(db, tangent)
+				);
+
+				return angleA < angleB;
+			}
+		);
+
+		// Triangulera face:et som triangle fan.
+		for(size_t i = 1; i + 1 < polygon.size(); ++i)
+		{
+			ObstacleVertex a;
+			a.position = polygon[0];
+			a.normal = n;
+			a.texCoord = glm::vec2(0.0f, 0.0f);
+
+			ObstacleVertex b;
+			b.position = polygon[i];
+			b.normal = n;
+			b.texCoord = glm::vec2(1.0f, 0.0f);
+
+			ObstacleVertex c;
+			c.position = polygon[i + 1];
+			c.normal = n;
+			c.texCoord = glm::vec2(0.0f, 1.0f);
+
+			vertices.push_back(a);
+			vertices.push_back(b);
+			vertices.push_back(c);
+		}
+	}
+
+	ObstacleGpu gpu;
+	gpu.vertexCount = static_cast<GLsizei>(vertices.size());
+
+	glGenVertexArrays(1, &gpu.vao);
+	glBindVertexArray(gpu.vao);
+
+	glGenBuffers(1, &gpu.vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+
+	glBufferData(
+		GL_ARRAY_BUFFER,
+		vertices.size() * sizeof(ObstacleVertex),
+		vertices.data(),
+		GL_STATIC_DRAW
+	);
+
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(
+		0,
+		3,
+		GL_FLOAT,
+		GL_FALSE,
+		sizeof(ObstacleVertex),
+		reinterpret_cast<void*>(offsetof(ObstacleVertex, position))
+	);
+
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(
+		1,
+		3,
+		GL_FLOAT,
+		GL_FALSE,
+		sizeof(ObstacleVertex),
+		reinterpret_cast<void*>(offsetof(ObstacleVertex, normal))
+	);
+
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(
+		2,
+		2,
+		GL_FLOAT,
+		GL_FALSE,
+		sizeof(ObstacleVertex),
+		reinterpret_cast<void*>(offsetof(ObstacleVertex, texCoord))
+	);
+
+	glBindVertexArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	return gpu;
+}
+
+void renderObstacle(
+	const ObstacleGpu& gpu,
+	GLuint shaderProgram,
+	const glm::mat4& modelMatrix,
+	const glm::mat4& viewMatrix,
+	const glm::mat4& projectionMatrix
+) {
+	glUseProgram(shaderProgram);
+
+	glm::mat4 modelViewMatrix = viewMatrix * modelMatrix;
+	glm::mat4 modelViewProjectionMatrix = projectionMatrix * modelViewMatrix;
+	glm::mat4 normalMatrix = glm::transpose(glm::inverse(modelViewMatrix));
+
+	glUniformMatrix4fv(
+		glGetUniformLocation(shaderProgram, "modelViewMatrix"),
+		1,
+		GL_FALSE,
+		glm::value_ptr(modelViewMatrix)
+	);
+
+	glUniformMatrix4fv(
+		glGetUniformLocation(shaderProgram, "modelViewProjectionMatrix"),
+		1,
+		GL_FALSE,
+		glm::value_ptr(modelViewProjectionMatrix)
+	);
+
+	glUniformMatrix4fv(
+		glGetUniformLocation(shaderProgram, "normalMatrix"),
+		1,
+		GL_FALSE,
+		glm::value_ptr(normalMatrix)
+	);
+
+	glUniform3f(
+		glGetUniformLocation(shaderProgram, "material_color"),
+		0.34f, 0.31f, 0.27f
+	);
+
+	glUniform1f(
+		glGetUniformLocation(shaderProgram, "material_shininess"),
+		8.0f
+	);
+
+	glUniform1f(
+		glGetUniformLocation(shaderProgram, "material_metalness"),
+		0.0f
+	);
+
+	glUniform1f(
+		glGetUniformLocation(shaderProgram, "material_fresnel"),
+		0.04f
+	);
+
+	glUniform3f(
+		glGetUniformLocation(shaderProgram, "material_emission"),
+		0.0f, 0.0f, 0.0f
+	);
+
+	glUniform1i(
+		glGetUniformLocation(shaderProgram, "has_color_texture"),
+		0
+	);
+
+	glUniform1i(
+		glGetUniformLocation(shaderProgram, "has_emission_texture"),
+		0
+	);
+
+	glBindVertexArray(gpu.vao);
+	glDrawArrays(GL_TRIANGLES, 0, gpu.vertexCount);
+	glBindVertexArray(0);
+}
+
+Face makeFace(glm::vec3 center, glm::vec3 normal, float distanceFromCenter) {
+    normal = glm::normalize(normal);
+
+    glm::vec3 point = center + distanceFromCenter * normal;
+
+    return Face {
+        point,
+        normal,
+        glm::dot(point, normal)
+    };
+}
+
+static float randRange(std::mt19937& rng, float a, float b) {
+    std::uniform_real_distribution<float> dist(a, b);
+    return dist(rng);
+}
+
+Obstacle generateRock(std::mt19937& rng, glm::vec3 center, float radius, int extraFaces) {
+    Obstacle rock;
+    rock.center = center;
+    rock.radius = radius;
+
+    // Grundform: ungefär en låda
+    std::vector<glm::vec3> normals = {
+        { 1,  0,  0},
+        {-1,  0,  0},
+        { 0,  1,  0},
+        { 0, -1,  0},
+        { 0,  0,  1},
+        { 0,  0, -1}
+    };
+
+    // Extra sneda ansikten för mer stenlik form
+    for (int i = 0; i < extraFaces; ++i) {
+        glm::vec3 n = glm::vec3(
+            randRange(rng, -1.0f, 1.0f),
+            randRange(rng, -0.4f, 1.0f),
+            randRange(rng, -1.0f, 1.0f)
+        );
+
+        if (glm::length(n) > 0.001f) {
+            normals.push_back(glm::normalize(n));
+        }
+    }
+
+    for (glm::vec3 n : normals) {
+        float dist = radius * randRange(rng, 0.65f, 1.15f);
+        rock.faces.push_back(makeFace(center, n, dist));
+    }
+
+    return rock;
+}
+
+std::vector<Obstacle> generateSceneRocks() {
+    std::mt19937 rng(1337);
+    std::vector<Obstacle> rocks;
+    // Stora stenar i scenkoordinater 0..4
+    rocks.push_back(generateRock(rng, glm::vec3(0.8f, 0.25f, 1.0f), 0.35f, 2));
+    rocks.push_back(generateRock(rng, glm::vec3(2.4f, 0.30f, 1.7f), 0.50f, 4));
+    rocks.push_back(generateRock(rng, glm::vec3(3.3f, 0.20f, 3.1f), 0.40f, 3));
+    for (const auto& rock : rocks) {
+        ObstacleGpu obstacleGpu = uploadObstacleToGpu(rock);
+
+    }
+    return rocks;
+}
+
+void ParticleSystem::set_obstacles2() {
+    glUseProgram(particleFeedbackProgram);
+    auto rocks = generateSceneRocks();
+    for (const auto& rock : rocks) {
+        for (const auto& face : rock.faces) {
+            glm::vec3 position = face.point;
+            glm::vec3 normal = face.normal;
+
+        }
+    }
+
+    std::vector<glm::vec4> planes;
+
+    for (const Obstacle& rock : rocks) {
+        for (const Face& face : rock.faces) {
+            planes.push_back(glm::vec4(face.normal, face.d));
+        }
+    }
+
+    glUniform1i(
+        glGetUniformLocation(particleFeedbackProgram, "numRockFaces"),
+        (int)planes.size()
+    );
+
+    glUniform4fv(
+        glGetUniformLocation(particleFeedbackProgram, "rockPlanes"),
+        (GLsizei)planes.size(),
+        glm::value_ptr(planes[0])
+    );
+
+    glUseProgram(0);
+}
+
+void ParticleSystem::

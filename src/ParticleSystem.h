@@ -3,13 +3,13 @@
 #include <vector>
 #include <glm/detail/type_vec3.hpp>
 #include <glm/mat4x4.hpp>
+#include "Rock.h"
+
 
 struct Particle
 {
     glm::vec4 pos;
-    //glm::vec3 velocity;
-    //float lifetime;
-    //float life_length;
+    glm::vec4 vel;
 };
 
 class ParticleSystem
@@ -18,17 +18,17 @@ public:
     explicit ParticleSystem(int capacity, glm::mat4 modelMatrix);
     ~ParticleSystem();
     void init_gpu_data();
-    void spawn(Particle particle);
     void process_particles(float dt);
     void draw_particles(const glm::mat4& viewMat, const glm::mat4& projMat, GLuint shaderProgram);
 	int particle_count() const { return (int)particles.size(); }
+	void set_obstacles(const std::vector<Rock>& rocks);
+    void set_obstacles2();
+    void renderRocks();
 
 private:
-    void kill(int id);
-
     std::vector<Particle> particles;
     int max_size;
-    GLuint vao, vbos[2];
-    int activeVBOindex;
+    GLuint vaos[2], vbos[2];
+    int activeIndex;
 	GLuint particleFeedbackProgram; 
 };
