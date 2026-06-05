@@ -97,6 +97,7 @@ vec3 worldUp(0.0f, 1.0f, 0.0f);
 // Models
 ///////////////////////////////////////////////////////////////////////////////
 labhelper::Model* rockModel = nullptr;
+labhelper::Texture rockTexture;
 std::vector<Rock> rocks;
 
 float shipSpeed = 50;
@@ -222,6 +223,7 @@ void initialize()
 	//fighterModel = labhelper::loadModelFromOBJ("../scenes/space-ship.obj");
 	//landingpadModel = labhelper::loadModelFromOBJ("../scenes/landingpad.obj");
 	rockModel = labhelper::loadModelFromOBJ("../scenes/stone.obj");
+	rockTexture.load("../scenes/", "RockSmooth0076_4_L.jpg", 3);
 	roomModelMatrix = mat4(1.0f);
 	//fighterModelMatrix = translate(15.0f * worldUp);
 	//landingPadModelMatrix = mat4(1.0f);
@@ -430,6 +432,16 @@ void display(void)
 	labhelper::setUniformSlow(shaderProgram, "point_light_intensity_multiplier",
 		point_light_intensity_multiplier);
 
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, rockTexture.gl_id);
+	labhelper::setUniformSlow(shaderProgram, "has_color_texture", 1);
+	labhelper::setUniformSlow(shaderProgram, "has_emission_texture", 0);
+	labhelper::setUniformSlow(shaderProgram, "material_color", vec3(1.0f));
+	labhelper::setUniformSlow(shaderProgram, "material_metalness", 0.0f);
+	labhelper::setUniformSlow(shaderProgram, "material_fresnel", 0.04f);
+	labhelper::setUniformSlow(shaderProgram, "material_shininess", 8.0f);
+	labhelper::setUniformSlow(shaderProgram, "material_emission", vec3(0.0f));
+
 	for (auto& rock : rocks) {
 		glm::mat4 model = glm::translate(glm::mat4(1.0f), rock.pos);
 		model = glm::rotate(model, rock.rotation, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -441,8 +453,9 @@ void display(void)
 		labhelper::setUniformSlow(shaderProgram, "normalMatrix",
 			glm::inverse(glm::transpose(viewMatrix * model)));
 
-		labhelper::render(rockModel);
+		labhelper::render(rockModel, false);
 	}
+	labhelper::setUniformSlow(shaderProgram, "has_color_texture", 0);
 	debugDrawLight(viewMatrix, projMatrix, vec3(lightPosition));
 
 	particle_system.process_particles(deltaTime);
@@ -614,6 +627,7 @@ int main(int argc, char* argv[])
 	// Free Models
 	//labhelper::freeModel(fighterModel);
 	//labhelper::freeModel(landingpadModel);
+	rockTexture.free();
 
 	// Shut down everything. This includes the window and all other subsystems.
 	labhelper::shutDown(g_window);
